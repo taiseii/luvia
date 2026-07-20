@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-
-from rapidfuzz import fuzz
+from difflib import SequenceMatcher
 
 FUZZY_THRESHOLD = 0.85
 
@@ -39,7 +38,10 @@ def score(answer: str, expected: str | list[str]) -> dict:
         normalized_candidate = normalize(candidate)
         if normalized_candidate == normalized_answer:
             return {"verdict": "exact", "score": 1.0, "matched": candidate}
-        ratio = fuzz.ratio(normalized_answer, normalized_candidate) / 100
+        # Stdlib-only LCS-based similarity (2·M/T), equivalent to the indel ratio
+        # this used to get from rapidfuzz — keeps the plugin dependency-free so it
+        # loads on any host Python without a pip step.
+        ratio = SequenceMatcher(None, normalized_answer, normalized_candidate).ratio()
         if ratio > best_ratio:
             best_candidate, best_ratio = candidate, ratio
 
