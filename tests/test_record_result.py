@@ -350,3 +350,50 @@ def test_swept_items_distinguishable_from_new_intake(tmp_path, monkeypatch):
         "SELECT DISTINCT item_id FROM session_events WHERE grade = 'already_knew'"
     ).fetchall()
     assert swept == [(swept_item,)]
+
+
+def test_grading_untracked_item_creates_scheduled_learner_item(tmp_path, monkeypatch):
+    """First grading of a freshly-picked new item must enter it into the schedule.
+
+    Regression: record_result was UPDATE-only, so grading an item with no
+    learner_items row silently dropped the schedule and the item never came due."""
+    monkeypatch.setenv("LUVIA_DB", str(tmp_path / "luvia.db"))
+
+    from plugin import store
+    from plugin.tools import luvia_record_result, luvia_setup
+
+    user_id = luvia_setup(name="T", telegram_user_id="tg-untracked", target_lang="nl")[
+        "user_id"
+    ]
+    conn = store.connect()
+    item_id = conn.execute(
+        "INSERT INTO content_items (lang, item_type, surface)"
+        " VALUES ('nl', 'lemma', 'de fiets')",
+        (),
+    ).lastrowid
+    conn.commit()
+    # No learner_items row exists for this item yet.
+    assert conn.execute("SELECT COUNT(*) FROM learner_items").fetchone()[0] == 0
+    conn.close()
+
+    result = luvia_record_result(
+        user_id=user_id,
+        item_id=item_id,
+        grade="good",
+        mechanism="ambient_recall",
+        lang="nl",
+        mode="ambient",
+    )
+
+    conn = store.connect()
+    row = conn.execute(
+        "SELECT status, due_at, success_count FROM learner_items"
+        " WHERE user_id = ? AND item_id = ?",
+        (user_id, item_id),
+    ).fetchone()
+    conn.close()
+    assert row is not None, "grading an untracked item must persist a learner_items row"
+    status, due_at, success_count = row
+    assert status == "review"
+    assert due_at == result["due_at"]
+    assert success_count == 1

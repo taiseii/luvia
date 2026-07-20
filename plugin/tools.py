@@ -411,11 +411,21 @@ def luvia_record_result(
                 failure_count += 1
                 status = "learning"
 
+            # Upsert: a freshly-picked new item has no learner_items row until it is
+            # first graded, so grading is the point it enters the schedule.
             conn.execute(
-                "UPDATE learner_items SET status = ?, due_at = ?, last_seen_at = ?,"
-                " last_score = ?, success_count = ?, failure_count = ?,"
-                " scheduler_state_json = ? WHERE user_id = ? AND item_id = ?",
+                "INSERT INTO learner_items (user_id, item_id, status, due_at,"
+                " last_seen_at, last_score, success_count, failure_count,"
+                " scheduler_state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(user_id, item_id) DO UPDATE SET"
+                " status = excluded.status, due_at = excluded.due_at,"
+                " last_seen_at = excluded.last_seen_at, last_score = excluded.last_score,"
+                " success_count = excluded.success_count,"
+                " failure_count = excluded.failure_count,"
+                " scheduler_state_json = excluded.scheduler_state_json",
                 (
+                    user_id,
+                    item_id,
                     status,
                     due.isoformat(),
                     now.isoformat(),
@@ -423,8 +433,6 @@ def luvia_record_result(
                     success_count,
                     failure_count,
                     json.dumps(new_state),
-                    user_id,
-                    item_id,
                 ),
             )
             result = {
