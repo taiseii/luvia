@@ -25,3 +25,25 @@ def test_sm2_interval_progression(grades, expected_intervals):
         intervals.append(state["interval_days"])
         assert due == NOW + timedelta(days=state["interval_days"])
     assert intervals == pytest.approx(expected_intervals)
+
+
+@pytest.mark.parametrize(
+    "expected_key, expected_value",
+    [
+        ("interval_days", 30.0),
+        ("ef", 2.65),
+        ("repetitions", 2),
+    ],
+)
+def test_already_knew_sweep_from_first_encounter(expected_key, expected_value):
+    sched = SM2Scheduler()
+    state, due = sched.schedule({}, Grade.already_knew, NOW)
+    assert state[expected_key] == pytest.approx(expected_value)
+    assert due == NOW + timedelta(days=30)
+
+
+def test_already_knew_rejected_after_first_encounter():
+    sched = SM2Scheduler()
+    seen_state, _ = sched.schedule({}, Grade.good, NOW)
+    with pytest.raises(ValueError, match="first encounter"):
+        sched.schedule(seen_state, Grade.already_knew, NOW)

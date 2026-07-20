@@ -54,7 +54,7 @@ def luvia_setup(
         conn.close()
 
 
-_SUCCESS_GRADES = {"good", "easy"}
+_SUCCESS_GRADES = {"good", "easy", "already_knew"}
 
 
 def luvia_record_result(

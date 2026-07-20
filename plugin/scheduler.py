@@ -40,13 +40,27 @@ class SM2Scheduler:
     MIN_EF = 1.3
     QUALITY = {Grade.again: 2, Grade.good: 4, Grade.easy: 5}
 
+    # Fast-track sweep: already-known vocabulary skips the graduation ladder and
+    # lands straight in review with an ease bump. Only valid on first encounter.
+    SWEEP_INTERVAL_DAYS = 30.0
+    SWEEP_EASE_BONUS = 0.15
+    SWEEP_REPETITIONS = 2
+
     def schedule(
         self, state: dict, grade: Grade, now: datetime
     ) -> tuple[dict, datetime]:
         if grade == Grade.already_knew:
-            raise ValueError(
-                "grade 'already_knew' is not supported until issue 0003"
-            )
+            if state:
+                raise ValueError(
+                    "grade 'already_knew' is only valid on an item's first encounter"
+                )
+            new_state = {
+                "repetitions": self.SWEEP_REPETITIONS,
+                "ef": 2.5 + self.SWEEP_EASE_BONUS,
+                "interval_days": self.SWEEP_INTERVAL_DAYS,
+            }
+            due = now + timedelta(days=self.SWEEP_INTERVAL_DAYS)
+            return new_state, due
 
         repetitions = state.get("repetitions", 0)
         ef = state.get("ef", 2.5)

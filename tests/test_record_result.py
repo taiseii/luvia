@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -243,24 +243,110 @@ def test_ambient_comprehension_break_is_queryable(tmp_path, monkeypatch):
     assert rows == [("ambient", "ik snap het niet")]
 
 
-def test_already_knew_rejected_until_issue_0003(tmp_path, monkeypatch):
+def test_already_knew_on_first_encounter_fast_tracks(tmp_path, monkeypatch):
     db_path = tmp_path / "luvia.db"
     monkeypatch.setenv("LUVIA_DB", str(db_path))
     user_id, item_id, session_id = _seed(db_path)
 
     from plugin.tools import luvia_record_result
 
-    with pytest.raises(ValueError, match="already_knew"):
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc)
+    result = luvia_record_result(
+        user_id=user_id,
+        item_id=item_id,
+        session_id=session_id,
+        grade="already_knew",
+        mechanism="flashcard",
+        now=now,
+    )
+
+    # ~30-day sweep, counted as a success rather than a lapse.
+    assert result["due_at"] == (now + timedelta(days=30)).isoformat()
+    assert result["status"] == "review"
+
+    conn = sqlite3.connect(db_path)
+    (grade,) = conn.execute(
+        "SELECT grade FROM session_events WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    assert grade == "already_knew"
+
+    status, success_count, failure_count = conn.execute(
+        "SELECT status, success_count, failure_count FROM learner_items"
+        " WHERE user_id = ? AND item_id = ?",
+        (user_id, item_id),
+    ).fetchone()
+    assert status == "review"
+    assert success_count == 1
+    assert failure_count == 0
+
+
+def test_already_knew_rejected_on_later_encounter(tmp_path, monkeypatch):
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id, item_id, session_id = _seed(db_path)
+
+    from plugin.tools import luvia_record_result
+
+    luvia_record_result(
+        user_id=user_id,
+        item_id=item_id,
+        session_id=session_id,
+        grade="good",
+        mechanism="flashcard",
+        now=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="first encounter"):
         luvia_record_result(
             user_id=user_id,
             item_id=item_id,
             session_id=session_id,
             grade="already_knew",
             mechanism="flashcard",
-            now=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc),
         )
 
+    # Rejection is atomic: only the first (good) event survives.
     conn = sqlite3.connect(db_path)
-    assert conn.execute(
-        "SELECT COUNT(*) FROM session_events WHERE session_id = ?", (session_id,)
-    ).fetchone()[0] == 0
+    grades = conn.execute(
+        "SELECT grade FROM session_events WHERE session_id = ?", (session_id,)
+    ).fetchall()
+    assert grades == [("good",)]
+
+
+def test_swept_items_distinguishable_from_new_intake(tmp_path, monkeypatch):
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id, swept_item, session_id = _seed(db_path)
+
+    # A second item the learner genuinely learns through the graduation ladder.
+    conn = sqlite3.connect(db_path)
+    new_item = conn.execute(
+        "INSERT INTO content_items (lang, item_type, surface)"
+        " VALUES ('nl', 'lemma', 'de kat')"
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO learner_items (user_id, item_id) VALUES (?, ?)",
+        (user_id, new_item),
+    )
+    conn.commit()
+    conn.close()
+
+    from plugin.tools import luvia_record_result
+
+    now = datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc)
+    luvia_record_result(
+        user_id=user_id, item_id=swept_item, session_id=session_id,
+        grade="already_knew", mechanism="flashcard", now=now,
+    )
+    luvia_record_result(
+        user_id=user_id, item_id=new_item, session_id=session_id,
+        grade="good", mechanism="flashcard", now=now,
+    )
+
+    # Pacing-band accounting (issue 0006) excludes items whose intake was a sweep.
+    conn = sqlite3.connect(db_path)
+    swept = conn.execute(
+        "SELECT DISTINCT item_id FROM session_events WHERE grade = 'already_knew'"
+    ).fetchall()
+    assert swept == [(swept_item,)]
