@@ -9,3 +9,4 @@ tools:
   - luvia_score_response
   - luvia_plan_today
   - luvia_stats
+  - luvia_set_method

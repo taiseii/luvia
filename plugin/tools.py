@@ -38,10 +38,19 @@ def _resolve_session(conn, user_id, lang, mode, now):
         )
     cursor = conn.execute(
         "INSERT INTO sessions (user_id, lang, mode, method_profile_id, started_at)"
-        " VALUES (?, ?, ?, 'default', ?)",
-        (user_id, lang, mode, now.isoformat()),
+        " VALUES (?, ?, ?, ?, ?)",
+        (user_id, lang, mode, _active_method(conn, user_id), now.isoformat()),
     )
     return cursor.lastrowid
+
+
+def _active_method(conn, user_id):
+    """The learner's chosen method profile, defaulting to 'default' when unset."""
+    row = conn.execute(
+        "SELECT metadata_json FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    metadata = json.loads(row[0]) if row and row[0] else {}
+    return metadata.get("active_method", "default")
 
 
 def luvia_pick_items(
@@ -136,6 +145,30 @@ def luvia_setup(
             user_id, created = cursor.lastrowid, True
         conn.commit()
         return {"user_id": user_id, "created": created, "target_lang": target_lang}
+    finally:
+        conn.close()
+
+
+def luvia_set_method(user_id: int, method_profile_id: str) -> dict:
+    """Switch the learner's active method profile, persisted in users.metadata_json."""
+    conn = store.connect()
+    try:
+        with conn:
+            known = conn.execute(
+                "SELECT 1 FROM method_profiles WHERE id = ?", (method_profile_id,)
+            ).fetchone()
+            if known is None:
+                raise ValueError(f"unknown method profile: {method_profile_id!r}")
+            (metadata_json,) = conn.execute(
+                "SELECT metadata_json FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            metadata["active_method"] = method_profile_id
+            conn.execute(
+                "UPDATE users SET metadata_json = ? WHERE id = ?",
+                (json.dumps(metadata), user_id),
+            )
+        return {"user_id": user_id, "active_method": method_profile_id}
     finally:
         conn.close()
 
