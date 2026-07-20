@@ -5,3 +5,4 @@ description: Language-learning engine — SQLite-backed SRS with ambient and rev
 tools:
   - luvia_setup
   - luvia_record_result
+  - luvia_pick_items

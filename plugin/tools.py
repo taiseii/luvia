@@ -1,11 +1,94 @@
 """The luvia_* tool surface declared in plugin.yaml."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from plugin import scheduler, store
 
 LANGUAGE_NAMES = {"nl": "Dutch", "en": "English"}
+
+# Bursts of activity in the same mode are grouped into one session row until this
+# much silence passes; the next touch opens a fresh burst. No user-facing ceremony.
+SESSION_GAP = timedelta(minutes=30)
+
+# Fixed default allotments for this slice; the real pacing band wires in via 0006.
+REVIEW_BATCH_SIZE = 20
+AMBIENT_BATCH_SIZE = 5
+AMBIENT_NEW_DEFAULT = 2
+
+
+def _resolve_session(conn, user_id, lang, mode, now):
+    """Return the id of the open burst for (user, lang, mode), reusing it while
+    activity stays within SESSION_GAP and opening a new session past the gap."""
+    row = conn.execute(
+        "SELECT id, started_at FROM sessions WHERE user_id = ? AND lang = ?"
+        " AND mode = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+        (user_id, lang, mode),
+    ).fetchone()
+    if row:
+        session_id, started_at = row
+        (last_event,) = conn.execute(
+            "SELECT MAX(created_at) FROM session_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        last_activity = datetime.fromisoformat(last_event or started_at)
+        if now - last_activity <= SESSION_GAP:
+            return session_id
+        conn.execute(
+            "UPDATE sessions SET ended_at = ? WHERE id = ?",
+            (last_activity.isoformat(), session_id),
+        )
+    cursor = conn.execute(
+        "INSERT INTO sessions (user_id, lang, mode, method_profile_id, started_at)"
+        " VALUES (?, ?, ?, 'default', ?)",
+        (user_id, lang, mode, now.isoformat()),
+    )
+    return cursor.lastrowid
+
+
+def luvia_pick_items(
+    user_id: int,
+    mode: str,
+    lang: str,
+    batch_size: int | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Return a mode-aware batch for the carrier persona, attached to the current
+    burst: due-review items for review mode, a small due+new micro-batch for
+    ambient mode."""
+    now = now or datetime.now(timezone.utc)
+    conn = store.connect()
+    try:
+        with conn:
+            session_id = _resolve_session(conn, user_id, lang, mode, now)
+            cap = batch_size or (
+                AMBIENT_BATCH_SIZE if mode == "ambient" else REVIEW_BATCH_SIZE
+            )
+            due = conn.execute(
+                "SELECT li.item_id, ci.surface FROM learner_items li"
+                " JOIN content_items ci ON ci.id = li.item_id"
+                " WHERE li.user_id = ? AND li.due_at IS NOT NULL AND li.due_at <= ?"
+                " ORDER BY li.due_at LIMIT ?",
+                (user_id, now.isoformat(), cap),
+            ).fetchall()
+            items = [
+                {"item_id": r[0], "surface": r[1], "source": "due"} for r in due
+            ]
+
+            if mode == "ambient":
+                new_cap = min(AMBIENT_NEW_DEFAULT, AMBIENT_BATCH_SIZE - len(items))
+                new = conn.execute(
+                    "SELECT id, surface FROM content_items WHERE lang = ?"
+                    " AND id NOT IN (SELECT item_id FROM learner_items WHERE user_id = ?)"
+                    " ORDER BY frequency_rank IS NULL, frequency_rank, id LIMIT ?",
+                    (lang, user_id, new_cap),
+                ).fetchall()
+                items += [
+                    {"item_id": r[0], "surface": r[1], "source": "new"} for r in new
+                ]
+        return {"session_id": session_id, "mode": mode, "items": items}
+    finally:
+        conn.close()
 
 
 def luvia_setup(
@@ -60,9 +143,11 @@ _SUCCESS_GRADES = {"good", "easy", "already_knew"}
 def luvia_record_result(
     user_id: int,
     item_id: int,
-    session_id: int,
     grade: str | None,
     mechanism: str,
+    session_id: int | None = None,
+    lang: str | None = None,
+    mode: str | None = None,
     latency_ms: int | None = None,
     comprehension_break: bool = False,
     prompt: str | None = None,
@@ -76,7 +161,8 @@ def luvia_record_result(
 
     The event is written first, then the scheduler runs and the learner item is
     updated; the whole block commits or rolls back together, so no review event
-    is ever persisted without its scheduling effect."""
+    is ever persisted without its scheduling effect. Pass an explicit session_id
+    to append to a known burst, or lang+mode to attach to the current one."""
     now = now or datetime.now(timezone.utc)
     grade_value = scheduler.Grade(grade) if grade is not None else None
     engine = scheduler.get(scheduler_name)
@@ -84,6 +170,12 @@ def luvia_record_result(
     conn = store.connect()
     try:
         with conn:
+            if session_id is None:
+                if lang is None or mode is None:
+                    raise ValueError(
+                        "luvia_record_result needs either session_id or lang+mode"
+                    )
+                session_id = _resolve_session(conn, user_id, lang, mode, now)
             (next_index,) = conn.execute(
                 "SELECT COALESCE(MAX(event_index) + 1, 0) FROM session_events"
                 " WHERE session_id = ?",
@@ -92,7 +184,8 @@ def luvia_record_result(
             conn.execute(
                 "INSERT INTO session_events (session_id, event_index, mechanism,"
                 " item_id, prompt, learner_response, grade, score, feedback,"
-                " latency_ms, comprehension_break) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " latency_ms, comprehension_break, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session_id,
                     next_index,
@@ -105,13 +198,14 @@ def luvia_record_result(
                     feedback,
                     latency_ms,
                     1 if comprehension_break else 0,
+                    now.isoformat(),
                 ),
             )
 
             # Ungraded events (e.g. ambient comprehension-break signals) are
             # logged without touching the learner item's schedule.
             if grade_value is None:
-                return {"due_at": None, "status": None}
+                return {"session_id": session_id, "due_at": None, "status": None}
 
             row = conn.execute(
                 "SELECT scheduler_state_json, success_count, failure_count"
@@ -146,7 +240,11 @@ def luvia_record_result(
                     item_id,
                 ),
             )
-            result = {"due_at": due.isoformat(), "status": status}
+            result = {
+                "session_id": session_id,
+                "due_at": due.isoformat(),
+                "status": status,
+            }
     finally:
         conn.close()
 
