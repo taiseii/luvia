@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from plugin import scheduler, scoring, store
+from plugin import pacing, scheduler, scoring, store
 
 LANGUAGE_NAMES = {"nl": "Dutch", "en": "English"}
 
@@ -11,10 +11,8 @@ LANGUAGE_NAMES = {"nl": "Dutch", "en": "English"}
 # much silence passes; the next touch opens a fresh burst. No user-facing ceremony.
 SESSION_GAP = timedelta(minutes=30)
 
-# Fixed default allotments for this slice; the real pacing band wires in via 0006.
 REVIEW_BATCH_SIZE = 20
 AMBIENT_BATCH_SIZE = 5
-AMBIENT_NEW_DEFAULT = 2
 
 
 def _resolve_session(conn, user_id, lang, mode, now):
@@ -76,7 +74,12 @@ def luvia_pick_items(
             ]
 
             if mode == "ambient":
-                new_cap = min(AMBIENT_NEW_DEFAULT, AMBIENT_BATCH_SIZE - len(items))
+                # New intake is governed by the pacing band's daily allotment,
+                # capped by the space left in the micro-batch.
+                band = pacing.current_band(_weekly_history(conn, user_id, now))
+                new_cap = min(
+                    pacing.daily_new_intake(band), AMBIENT_BATCH_SIZE - len(items)
+                )
                 new = conn.execute(
                     "SELECT id, surface FROM content_items WHERE lang = ?"
                     " AND id NOT IN (SELECT item_id FROM learner_items WHERE user_id = ?)"
@@ -135,6 +138,81 @@ def luvia_setup(
         return {"user_id": user_id, "created": created, "target_lang": target_lang}
     finally:
         conn.close()
+
+
+# A week with no genuine (non-sweep) reviews carries no recall signal, so it
+# holds the band rather than dragging it down.
+NEUTRAL_RECALL = 0.75
+
+
+def _weekly_history(conn, user_id: int, now: datetime) -> list[dict]:
+    """Reconstruct completed-week pacing stats from session events alone.
+
+    Fast-tracked sweeps (grade 'already_knew') are excluded from recall so they
+    never consume the band; the in-progress week is skipped until it closes."""
+    rows = conn.execute(
+        "SELECT se.created_at, se.grade FROM session_events se"
+        " JOIN sessions s ON s.id = se.session_id WHERE s.user_id = ?",
+        (user_id,),
+    ).fetchall()
+
+    weeks: dict[int, dict] = {}
+    for created_at, grade in rows:
+        week_index = (now - datetime.fromisoformat(created_at)).days // 7
+        if week_index <= 0:
+            continue  # current, still-open week does not ratchet yet
+        week = weeks.setdefault(
+            week_index, {"dates": set(), "correct": 0, "reviews": 0}
+        )
+        week["dates"].add(datetime.fromisoformat(created_at).date())
+        if grade in ("again", "good", "easy"):
+            week["reviews"] += 1
+            if grade in ("good", "easy"):
+                week["correct"] += 1
+
+    history = []
+    for week_index in sorted(weeks, reverse=True):  # oldest week first
+        week = weeks[week_index]
+        active_days = len(week["dates"])
+        recall = (
+            week["correct"] / week["reviews"] if week["reviews"] else NEUTRAL_RECALL
+        )
+        history.append(
+            {
+                "recall": recall,
+                "completion": active_days / 7,
+                "skipped_days": 7 - active_days,
+            }
+        )
+    return history
+
+
+def luvia_plan_today(user_id: int, lang: str, now: datetime | None = None) -> dict:
+    """The carrier persona's daily plan, from SQLite state alone (cron-safe).
+
+    Returns the pacing band, the capped due load with any overflow spilled
+    forward, the guaranteed new intake, and a suggested mode balance."""
+    now = now or datetime.now(timezone.utc)
+    conn = store.connect()
+    try:
+        (due_count,) = conn.execute(
+            "SELECT COUNT(*) FROM learner_items li"
+            " JOIN content_items ci ON ci.id = li.item_id"
+            " WHERE li.user_id = ? AND ci.lang = ?"
+            " AND li.due_at IS NOT NULL AND li.due_at <= ?",
+            (user_id, lang, now.isoformat()),
+        ).fetchone()
+        band = pacing.current_band(_weekly_history(conn, user_id, now))
+    finally:
+        conn.close()
+
+    plan = pacing.daily_plan(band, due_count)
+    plan["band"] = band
+    plan["mode_balance"] = {
+        "review": plan["due_load"],
+        "ambient": plan["new_intake"],
+    }
+    return plan
 
 
 def luvia_score_response(answer: str, expected: str | list[str]) -> dict:

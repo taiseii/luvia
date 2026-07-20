@@ -70,7 +70,7 @@ def test_new_intake_excludes_items_learner_has_state_for(tmp_path, monkeypatch):
     new_ids = {i["item_id"] for i in batch["items"] if i["source"] == "new"}
     assert seen not in new_ids
     assert new_ids <= fresh
-    assert len(new_ids) == 2  # AMBIENT_NEW_DEFAULT
+    assert len(new_ids) == 3  # all three fresh items, under the band/batch cap
 
 
 def test_ambient_mixes_due_and_new_without_duplicates(tmp_path, monkeypatch):
@@ -93,9 +93,29 @@ def test_ambient_mixes_due_and_new_without_duplicates(tmp_path, monkeypatch):
 
     sources = [i["source"] for i in batch["items"]]
     assert sources.count("due") == 2
-    assert sources.count("new") == 2  # AMBIENT_NEW_DEFAULT
+    assert sources.count("new") == 3  # fills remaining micro-batch slots from band
     ids = [i["item_id"] for i in batch["items"]]
     assert len(ids) == len(set(ids))  # no item offered twice in a batch
+
+
+def test_ambient_new_intake_governed_by_band(tmp_path, monkeypatch):
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id = _new_user()
+
+    conn = sqlite3.connect(db_path)
+    for surface in ("de kat", "de hond", "de vis", "de boom", "de tafel", "de stoel"):
+        _add_content(conn, surface)
+    conn.commit()
+    conn.close()
+
+    from plugin.tools import luvia_pick_items
+
+    batch = luvia_pick_items(user_id=user_id, mode="ambient", lang="nl", now=NOW)
+
+    # Starting band 50 -> ~7 new/day, capped by the ambient micro-batch size (5).
+    new_ids = [i for i in batch["items"] if i["source"] == "new"]
+    assert len(new_ids) == 5
 
 
 def test_activity_within_gap_shares_one_session(tmp_path, monkeypatch):
