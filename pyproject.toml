@@ -1,0 +1,13 @@
+[project]
+name = "luvia"
+version = "0.1.0"
+description = "Language-learning extension for Hermes Agent"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest", "pyyaml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
