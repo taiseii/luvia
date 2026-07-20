@@ -6,3 +6,4 @@ tools:
   - luvia_setup
   - luvia_record_result
   - luvia_pick_items
+  - luvia_score_response

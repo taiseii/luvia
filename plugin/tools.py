@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from plugin import scheduler, store
+from plugin import scheduler, scoring, store
 
 LANGUAGE_NAMES = {"nl": "Dutch", "en": "English"}
 
@@ -135,6 +135,14 @@ def luvia_setup(
         return {"user_id": user_id, "created": created, "target_lang": target_lang}
     finally:
         conn.close()
+
+
+def luvia_score_response(answer: str, expected: str | list[str]) -> dict:
+    """Deterministically score a typed answer against the accepted answer(s).
+
+    Pure scoring, no scheduling side effects: the carrier persona applies LLM
+    judgment to ambiguous answers based on the verdict this returns."""
+    return scoring.score(answer, expected)
 
 
 _SUCCESS_GRADES = {"good", "easy", "already_knew"}
