@@ -1,0 +1,54 @@
+# Luvia
+
+A language-learning extension for Hermes Agent: a Python plugin plus skill package that turns Hermes into an adaptive language tutor backed by SQLite.
+
+## Language
+
+**Luvia**:
+The extension itself — plugin, skill, and database together. The only product name.
+_Avoid_: learn, hermes-language-extension, language extension
+
+**Hermes**:
+The host agent platform (NousResearch/Hermes-Agent), running on a remote server. Luvia extends it; Luvia never modifies it.
+
+**Learner**:
+A person whose language progress Luvia tracks. Stored as a row in the users table; all learner state hangs off it. First learner: Taisei, target Dutch, starting at A2.
+_Avoid_: user (in domain discussion; fine as table name), student
+
+**Target language**:
+The language a learner is acquiring. Dutch first.
+
+**Reference language**:
+The language used for meanings and translations shown to the learner. English for now.
+
+**Content item**:
+One reusable unit of learnable content: a lemma, phrase, dialogue turn, grammar pattern, article, or exercise. All methods draw from the same pool of content items.
+_Avoid_: card, atom, entry
+
+**Lemma**:
+The dictionary form of a word; the unit of vocabulary. Dutch nouns include their article ("het huis"), verbs are stored as infinitives, separable verbs are one lemma, and inflected forms are never separate items.
+_Avoid_: word (ambiguous between surface form and lemma)
+
+**Ambient practice**:
+The primary interaction mode: language practice woven into natural companion conversation at randomized moments, graded implicitly from the learner's replies. No visible rubric, no teacher persona.
+_Avoid_: lesson, drill (those imply the explicit mode)
+
+**Review mode**:
+The explicit, learner-invoked flashcard mode with visible grading buttons. Fallback, not the default.
+
+**Carrier persona**:
+The companion persona skill that Luvia overlays with practice behavior. Luvia is persona-agnostic; sophia is the first carrier.
+_Avoid_: teacher, tutor persona
+
+**Code-switching**:
+The carrier persona's bilingual behavior: Dutch woven in at the learner's level, English for explanations and whenever comprehension breaks.
+
+**Pacing band**:
+The adaptive range of weekly new-item intake (35-70, start 50), ratcheted weekly from trailing recall and completion. Bounded by review-load ceiling, not by the band itself.
+_Avoid_: quota (implies fixed), streak
+
+**Sweep**:
+Clearing already-known items via first-encounter fast-track onto long intervals. Sweeps don't consume the pacing band.
+
+**Fast-track**:
+First-encounter grade "already knew" that jumps an item straight to a ~month interval, skipping the graduation ladder.
