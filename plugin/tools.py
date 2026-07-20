@@ -215,6 +215,74 @@ def luvia_plan_today(user_id: int, lang: str, now: datetime | None = None) -> di
     return plan
 
 
+def luvia_stats(user_id: int, lang: str, now: datetime | None = None) -> dict:
+    """A read-only "is this working" snapshot from SQLite state alone (cron-safe,
+    no chat context): recall rate, sweep progress, pacing-band position, and due
+    counts.
+
+    Recall reuses the same grade classification the pacing band folds over —
+    'already_knew' sweeps are excluded so they never inflate the figure — but
+    aggregates it across the whole trailing history rather than folding per week."""
+    now = now or datetime.now(timezone.utc)
+    conn = store.connect()
+    try:
+        reviews, correct = conn.execute(
+            "SELECT"
+            " SUM(CASE WHEN se.grade IN ('again', 'good', 'easy') THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN se.grade IN ('good', 'easy') THEN 1 ELSE 0 END)"
+            " FROM session_events se JOIN sessions s ON s.id = se.session_id"
+            " WHERE s.user_id = ? AND s.lang = ?",
+            (user_id, lang),
+        ).fetchone()
+        reviews, correct = reviews or 0, correct or 0
+
+        # Swept: distinct items the first-encounter fast-track has cleared.
+        # Remaining: corpus the sweep has not yet reached (still unencountered).
+        (swept,) = conn.execute(
+            "SELECT COUNT(DISTINCT se.item_id) FROM session_events se"
+            " JOIN sessions s ON s.id = se.session_id"
+            " WHERE s.user_id = ? AND s.lang = ? AND se.grade = 'already_knew'",
+            (user_id, lang),
+        ).fetchone()
+        (remaining,) = conn.execute(
+            "SELECT COUNT(*) FROM content_items ci WHERE ci.lang = ?"
+            " AND ci.id NOT IN (SELECT item_id FROM learner_items WHERE user_id = ?)",
+            (lang, user_id),
+        ).fetchone()
+
+        (due_now,) = conn.execute(
+            "SELECT COUNT(*) FROM learner_items li"
+            " JOIN content_items ci ON ci.id = li.item_id"
+            " WHERE li.user_id = ? AND ci.lang = ?"
+            " AND li.due_at IS NOT NULL AND li.due_at <= ?",
+            (user_id, lang, now.isoformat()),
+        ).fetchone()
+        (tracked,) = conn.execute(
+            "SELECT COUNT(*) FROM learner_items li"
+            " JOIN content_items ci ON ci.id = li.item_id"
+            " WHERE li.user_id = ? AND ci.lang = ?",
+            (user_id, lang),
+        ).fetchone()
+
+        band = pacing.current_band(_weekly_history(conn, user_id, now))
+    finally:
+        conn.close()
+
+    return {
+        "recall": {
+            "rate": correct / reviews if reviews else None,
+            "reviews": reviews,
+            "correct": correct,
+        },
+        "sweep": {"swept": swept, "remaining": remaining},
+        "band": {
+            "position": band,
+            "daily_new_intake": pacing.daily_new_intake(band),
+        },
+        "due": {"due_now": due_now, "tracked": tracked},
+    }
+
+
 def luvia_score_response(answer: str, expected: str | list[str]) -> dict:
     """Deterministically score a typed answer against the accepted answer(s).
 
