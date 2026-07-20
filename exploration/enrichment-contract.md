@@ -45,6 +45,24 @@ Dutch example naturalness (spreektaal, not textbook) and gloss choice, pick one,
 full batch. No formal gold-set benchmark needed anymore — the hard deterministic fields
 are out of the model's hands.
 
+**Model decision (2026-07-20): `google/gemini-3.5-flash` via OpenRouter.** Eyeball run
+(`residual_eyeball.py`, 40 items): 40/40 valid JSON, examples genuinely spreektaal
+("relaxte vent", "chillen met de boys", "m'n vinger"), gloss choice sensible (zender →
+"TV or radio channel", angel → "sting"). Cost $0.31 for 41K tokens — completion-heavy
+(thinking tokens), still negligible.
+
+Two findings from the run:
+
+1. **True residual is ~42 items, not 100–200** — Tatoeba misses overlap with kaikki
+   junk-drop more than estimated.
+2. **Lexicon membership leaks proper nouns and English.** Lowercase given names (annie,
+   abby, rebecca, jacob, hank, hector), English contamination (my, love, boy, it), and
+   frequency/sense mismatches (kim glossed "horizon" but subtitle frequency is the name;
+   bo glossed as Flemish "sandwich") all have kaikki entries, so they survive the join.
+   ~⅓ of the residual sample is junk. Fixes: exclude kaikki entries whose only POS is
+   `name`, and let the residual model pass emit a drop flag — its `notes` field already
+   caught wangeloven (archaic), isogeen (technical), my/love (obsolete spellings).
+
 ## Model output contract (residual pass)
 
 ```json
@@ -53,6 +71,7 @@ are out of the model's hands.
   "chosen_gloss": "to sit",
   "example_nl": "blijf je nog even zitten?",
   "example_en": "are you staying seated a bit longer?",
+  "keep": true,
   "notes": ""
 }
 ```

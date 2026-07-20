@@ -56,7 +56,9 @@ rerunnable and resumable.
 - Junk filtering is lexicon membership: a lemma absent from the kaikki lexicon (after
   accent normalization and case-insensitive indexing) is dropped with reason. The
   `simplemma.is_known` function must never be used as a filter (verified to reject core
-  function words).
+  function words). Membership alone leaks lowercase given names and English contamination
+  that have Wiktionary entries (annie, my, love, boy — verified in eyeball run): also drop
+  entries whose only kaikki POS is `name`, and honor the residual pass's drop flag.
 - Mis-lemmatization resolution rule: when the simplemma output is absent from the lexicon
   but the raw form is present as a lexicon headword, the lexicon headword wins.
 - Vocabulary unit is the lemma per the domain glossary: nouns get their article in the
@@ -65,8 +67,9 @@ rerunnable and resumable.
 - Example selection: shortest natural Tatoeba sentence (≤12 words preferred) containing the
   lemma or any inflected form from the kaikki inflection tables, with its English
   translation.
-- Residual LLM batch: OpenRouter, model chosen by a ~40-item eyeball test for Dutch
-  spreektaal naturalness; structured JSON output; total volume ~100–200K tokens.
+- Residual LLM batch: OpenRouter with `google/gemini-3.5-flash` (validated by 40-item
+  eyeball test 2026-07-20: natural spreektaal, sensible gloss choice, $0.31); structured
+  JSON output including a drop flag; true residual measured at ~42 items.
 - Output target: the content-items table of the Luvia schema (defined in PRD 0002), with
   register tags, frequency rank, source attribution, and item type `lemma` (phrases:
   `phrase`).
