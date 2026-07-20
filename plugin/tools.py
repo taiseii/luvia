@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
-from plugin import pacing, scheduler, scoring, store
+from . import pacing, scheduler, scoring, store
 
 LANGUAGE_NAMES = {"nl": "Dutch", "en": "English"}
 

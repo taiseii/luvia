@@ -6,7 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 DEFAULT_DB = Path.home() / ".hermes" / "luvia.db"
 
 

@@ -1,12 +1,13 @@
+manifest_version: 1
 name: luvia
 version: 0.1.0
-kind: tools
+kind: standalone
 description: Language-learning engine — SQLite-backed SRS with ambient and review modes
-tools:
+provides_tools:
   - luvia_setup
-  - luvia_record_result
-  - luvia_pick_items
-  - luvia_score_response
-  - luvia_plan_today
-  - luvia_stats
   - luvia_set_method
+  - luvia_plan_today
+  - luvia_pick_items
+  - luvia_record_result
+  - luvia_score_response
+  - luvia_stats

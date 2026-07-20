@@ -8,7 +8,7 @@ MANIFEST = Path(__file__).parent.parent / "plugin" / "plugin.yaml"
 
 def test_score_response_declared_in_manifest():
     manifest = yaml.safe_load(MANIFEST.read_text())
-    assert "luvia_score_response" in manifest["tools"]
+    assert "luvia_score_response" in manifest["provides_tools"]
 
 
 def test_scoring_has_no_scheduling_side_effect(tmp_path, monkeypatch):
