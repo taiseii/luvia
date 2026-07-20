@@ -1,0 +1,21 @@
+# communicative_hybrid — informal functional communication with selective,
+# delayed correction. Register is spreektaal; formal register only on request.
+register: informal
+language_mix: adaptive          # driven by observed comprehension, CEFR prior A2 only
+# Input signals the adaptive mix consumes. Declared here so logging knows what to
+# capture; the mixing logic that turns these into a Dutch ratio / difficulty is
+# out of scope for this loader and this profile.
+language_mix_signals:
+  - recall_rate
+  - response_latency
+  - comprehension_break_rate
+  - self_rating
+  - english_rescue_rate
+modality_weights: { reading: 0.20, listening: 0.20, speaking: 0.40, writing: 0.20 }
+mechanism_weights: { exposure: 0.20, retrieval: 0.20, production: 0.35, correction: 0.15, reflection: 0.10 }
+content_weights: { lemmas: 0.20, phrases: 0.35, dialogues: 0.25, tasks: 0.20 }
+correction_policy: delayed_selective
+new_item_ratio: 0.15
+review_ratio: 0.35
+free_production_ratio: 0.25
+success_metrics: [recall_rate, response_latency, comprehensibility, confidence]

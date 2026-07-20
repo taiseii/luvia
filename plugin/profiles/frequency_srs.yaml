@@ -1,0 +1,13 @@
+# frequency_srs — high-frequency lemmas/phrases drilled on a spaced schedule.
+# Retrieval-first: the learner recalls known items on time rather than producing
+# free speech. Register follows each item; there is no adaptive language mix here.
+register: neutral
+language_mix: fixed              # no comprehension-driven mixing in this profile
+modality_weights: { reading: 0.30, listening: 0.20, speaking: 0.20, writing: 0.30 }
+mechanism_weights: { exposure: 0.15, retrieval: 0.55, production: 0.10, correction: 0.10, reflection: 0.10 }
+content_weights: { lemmas: 0.55, phrases: 0.35, dialogues: 0.05, tasks: 0.05 }
+correction_policy: immediate
+new_item_ratio: 0.20
+review_ratio: 0.60
+free_production_ratio: 0.05
+success_metrics: [recall_rate, response_latency]
