@@ -174,6 +174,75 @@ def test_naive_now_is_rejected(tmp_path, monkeypatch):
         store.selfie_allowance(conn, 1, datetime(2026, 7, 20, 10, 0))
 
 
+def test_request_limit_env_raises_the_ceiling(tmp_path, monkeypatch):
+    monkeypatch.setenv("LUVIA_SELFIE_REQUEST_LIMIT", "10")
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    # Five request selfies inside the window: past the fixed default of three,
+    # but the raised ceiling of ten still leaves five.
+    for i in range(5):
+        store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=i + 1))
+    assert store.selfie_allowance(conn, 1, NOW)["request"] == 5
+
+    # Ten spent exhausts the ceiling; the eleventh cannot pass.
+    for i in range(5, 11):
+        store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=i + 1))
+    assert store.selfie_allowance(conn, 1, NOW)["request"] == 0
+
+
+def test_request_limit_zero_disables_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setenv("LUVIA_SELFIE_REQUEST_LIMIT", "0")
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    # Well past any finite ceiling: the sentinel 0 means the request path never
+    # caps, so allowance stays positive no matter the history.
+    for i in range(20):
+        store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=i + 1))
+
+    assert store.selfie_allowance(conn, 1, NOW)["request"] > 0
+
+
+@pytest.mark.parametrize("bad", ["abc", "-1", "", "3.5", "  "])
+def test_malformed_request_limit_falls_back_to_default(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("LUVIA_SELFIE_REQUEST_LIMIT", bad)
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    # A garbled ceiling must fail safe to the default of three, never fail open
+    # to an unbounded spend on the live API key. Two spent leaves exactly one —
+    # which holds only if the limit resolved to three (not 2, 4, or inf).
+    store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=1))
+    store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=2))
+
+    assert store.selfie_allowance(conn, 1, NOW)["request"] == 1
+
+
+def test_request_limit_env_does_not_touch_the_proactive_cap(tmp_path, monkeypatch):
+    # Even fully disabling the request cap must not loosen the proactive bound:
+    # the proactive path is persona-initiated and stays a fixed ≤1/72h (ADR 0003).
+    monkeypatch.setenv("LUVIA_SELFIE_REQUEST_LIMIT", "0")
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    store.log_selfie(conn, 1, "proactive", NOW - timedelta(hours=1))
+
+    assert store.selfie_allowance(conn, 1, NOW)["proactive"] == 0
+
+
+def test_request_limit_defaults_to_three_when_env_unset(tmp_path, monkeypatch):
+    monkeypatch.delenv("LUVIA_SELFIE_REQUEST_LIMIT", raising=False)
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    # Unset env is the shipped default: the request ceiling is three.
+    store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=1))
+    store.log_selfie(conn, 1, "request", NOW - timedelta(minutes=2))
+
+    assert store.selfie_allowance(conn, 1, NOW)["request"] == 1
+
+
 def test_unknown_trigger_source_is_rejected_and_writes_nothing(tmp_path, monkeypatch):
     from plugin import store
 

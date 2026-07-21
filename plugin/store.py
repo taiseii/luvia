@@ -14,7 +14,8 @@ DEFAULT_DB = Path.home() / ".hermes" / "luvia.db"
 # the LLM never adjudicates its own quota. Trailing windows, same as pacing.
 PROACTIVE_LIMIT = 1
 PROACTIVE_WINDOW = timedelta(hours=72)
-REQUEST_LIMIT = 3
+DEFAULT_REQUEST_LIMIT = 3
+REQUEST_LIMIT_ENV = "LUVIA_SELFIE_REQUEST_LIMIT"
 REQUEST_WINDOW = timedelta(hours=24)
 
 SELFIE_TRIGGER_SOURCES = ("proactive", "request")
@@ -32,6 +33,29 @@ def _as_utc(dt: datetime, *, field: str) -> datetime:
             f"{field} must be a timezone-aware datetime, got naive {dt!r}"
         )
     return dt.astimezone(timezone.utc)
+
+
+def _request_limit() -> float:
+    """The on-request selfie ceiling, read from env on every call (a cron run
+    reconstructs it with no chat memory, per ADR 0003).
+
+    The proactive cap is deliberately not tunable. Only the *request* ceiling is:
+    a positive int in `LUVIA_SELFIE_REQUEST_LIMIT` overrides the default, the
+    sentinel `0` disables the check entirely (returns inf, so the request path
+    never caps), and anything malformed — negative, non-int, empty — falls back
+    to the default rather than fail open."""
+    raw = os.environ.get(REQUEST_LIMIT_ENV)
+    if raw is None:
+        return DEFAULT_REQUEST_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_REQUEST_LIMIT
+    if value < 0:
+        return DEFAULT_REQUEST_LIMIT
+    if value == 0:
+        return float("inf")
+    return value
 
 
 def db_path() -> Path:
@@ -98,9 +122,11 @@ def selfie_allowance(
 ) -> dict:
     """Remaining selfies the learner may take per source, from logged history alone.
 
-    Proactive <= 1 per rolling 72h, on-request <= 3 per rolling 24h. Recomputed
-    from the SQLite file on every call — a cron run reconstructs it with no chat
-    memory. Never negative even if history somehow exceeds a limit."""
+    Proactive <= 1 per rolling 72h (a fixed hard bound). On-request <= a
+    configurable ceiling per rolling 24h (default 3, tunable via env — see
+    `_request_limit`); when the ceiling is disabled the request value is `inf`.
+    Recomputed from the SQLite file on every call — a cron run reconstructs it
+    with no chat memory. Never negative even if history somehow exceeds a limit."""
     now = _as_utc(now, field="now")
     proactive_used = _selfies_in_window(
         conn, user_id, "proactive", now - PROACTIVE_WINDOW
@@ -110,5 +136,5 @@ def selfie_allowance(
     )
     return {
         "proactive": max(0, PROACTIVE_LIMIT - proactive_used),
-        "request": max(0, REQUEST_LIMIT - request_used),
+        "request": max(0, _request_limit() - request_used),
     }
