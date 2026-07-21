@@ -133,3 +133,18 @@ CREATE TABLE IF NOT EXISTS experiment_arms (
   method_profile_id TEXT NOT NULL REFERENCES method_profiles(id),
   weight REAL NOT NULL DEFAULT 1
 );
+
+-- One row per generated selfie, keyed by learner. Quota windows (proactive
+-- <= 1 / rolling 72h, on-request <= 3 / rolling 24h) are computed purely from
+-- this history over trailing windows, never from chat context.
+CREATE TABLE IF NOT EXISTS selfie_log (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  trigger_source TEXT NOT NULL CHECK (trigger_source IN ('proactive', 'request')),
+  created_at TEXT NOT NULL             -- UTC ISO 8601 timestamp
+);
+
+-- Serves the hot quota read: count a learner's selfies of one source over a
+-- trailing window.
+CREATE INDEX IF NOT EXISTS idx_selfie_log_quota
+  ON selfie_log (user_id, trigger_source, created_at);
