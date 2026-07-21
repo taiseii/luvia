@@ -232,3 +232,100 @@ def test_never_raises_on_odd_input():
     for bad in [None, 123, ["nude"], {"scene": "nude"}]:
         result = sanitize(bad)
         assert result["verdict"] in ("pass", "reject")
+
+
+# --- Fail-closed: malformed / non-string input MUST reject -------------------
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        123,
+        3.14,
+        True,
+        b"nude",
+        bytearray(b"nude"),
+        ["nude"],
+        ("nude",),
+        {"scene": "fully nude"},
+        {"nude"},
+        object(),
+    ],
+)
+def test_non_string_input_rejects(bad):
+    # A filter that fails OPEN on odd input is a bypass. Non-str must reject.
+    result = sanitize(bad)
+    assert result["verdict"] == "reject", f"non-str input passed: {bad!r}"
+    assert result["categories"] == ["malformed"]
+
+
+# --- Unicode homoglyph / fullwidth / math-alphanumeric bypasses --------------
+
+UNICODE_BYPASS_SCENES = [
+    "ｎｕｄｅ selfie on the bed",          # fullwidth
+    "\U0001d5c7\U0001d5ce\U0001d5bd\U0001d5be on the bed",  # math sans-serif 'nude'
+    "nυde in bed",                    # Greek upsilon for 'u'
+    "nаked in the shower",            # Cyrillic 'а' for 'a'
+    "tорless mirror shot",       # Cyrillic 'о','р' -> topless
+]
+
+
+@pytest.mark.parametrize("scene", UNICODE_BYPASS_SCENES)
+def test_unicode_homoglyph_bypasses_rejected(scene):
+    assert sanitize(scene)["verdict"] == "reject", f"unicode bypass passed: {scene!r}"
+
+
+# --- Zero-width character bypasses -------------------------------------------
+
+ZERO_WIDTH_BYPASS_SCENES = [
+    "s​ex on the couch",
+    "p‍ussy shot",
+    "v‌ulva close up",
+    "o﻿ral s​ex",
+    "n​ude by the window",
+]
+
+
+@pytest.mark.parametrize("scene", ZERO_WIDTH_BYPASS_SCENES)
+def test_zero_width_bypasses_rejected(scene):
+    assert sanitize(scene)["verdict"] == "reject", f"zero-width bypass passed: {scene!r}"
+
+
+# --- Full-surface spaced-out bypasses (not just a compact token list) --------
+
+SPACED_BYPASS_SCENES = [
+    "s e x on the couch",
+    "p o r n shoot",
+    "n s f w content",
+    "x x x",
+    "h a n d j o b",
+    "p u s s y",
+    "v u l v a",
+    "n.u.d.e by the window",
+    "she t a k e s   o f f   h e r   b r a",
+]
+
+
+@pytest.mark.parametrize("scene", SPACED_BYPASS_SCENES)
+def test_full_surface_spaced_bypasses_rejected(scene):
+    assert sanitize(scene)["verdict"] == "reject", f"spaced bypass passed: {scene!r}"
+
+
+# --- Compacting must not forge matches across word boundaries -----------------
+
+def test_no_false_positive_across_word_boundaries():
+    # "open is the question" must not collapse into "...penis..." and reject.
+    assert sanitize("open is the question of the day")["verdict"] == "pass"
+    assert sanitize("a therapist and a scent of grapefruit")["verdict"] == "pass"
+
+
+# --- Over-match tightening: safe/clothed phrasings must pass ------------------
+
+def test_orientation_and_figurative_phrasings_pass():
+    for scene in [
+        "same-sex couple portrait, both smiling",
+        "a same sex wedding photo, candid",
+        "her penetrating gaze straight into the camera",
+        "a penetrating stare, dramatic lighting",
+    ]:
+        assert sanitize(scene)["verdict"] == "pass", scene

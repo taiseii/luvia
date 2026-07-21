@@ -14,22 +14,30 @@ The reject verdict is a plain data payload (verdict + matched phrases +
 categories) so the calling tool can turn it into a soft, in-character
 deflection. This module never raises to the chat.
 
-Design notes:
-- Detection is fail-closed: when in doubt about an anatomy word that is innocent
-  when clothed (breasts, chest, butt) we only reject if an exposure/removal cue
-  co-occurs; unambiguous tokens (nude, naked, genitals, explicit acts) reject on
-  their own.
-- Inputs are de-obfuscated before matching (leetspeak folding + a separator-
-  stripped pass) so "n u d e", "n4k3d", and "n.u.d.e" cannot slip past.
+Design — fail-closed throughout:
+- Malformed input (anything that is not a `str`, or that cannot be normalized)
+  is REJECTED, never passed. A filter that fails open is worse than useless.
+- Matching runs over an aggressively normalized copy of the text:
+    * Unicode NFKC (folds fullwidth `ｎｕｄｅ` and mathematical `𝚗𝚞𝚍𝚎` to ASCII),
+    * format / zero-width / combining chars stripped (`s‍ex`, `nu͏de`),
+    * casefold, then Greek/Cyrillic homoglyph folding (`nυde`, `nаked`),
+    * leetspeak folding (`n4k3d`, `t0pless`, `$ex`).
+- A word-boundary-safe "letter-run collapse" additionally neutralizes spaced-out
+  bypasses (`s e x`, `p u s s y`, `n.u.d.e`) across the *whole* banned surface,
+  without merging across ordinary words (so "open is the question" stays clean).
+- Ambiguous anatomy that is innocent when clothed (breasts, chest, butt) rejects
+  only when an exposure/removal cue co-occurs; unambiguous tokens reject alone.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 
-# Leetspeak / homoglyph folding applied before matching. Conservative on
-# purpose: only substitutions that overwhelmingly appear as bypass attempts,
-# never ones that would routinely corrupt innocent words.
+# --- Normalization tables ----------------------------------------------------
+
+# Leetspeak / symbol substitutions applied before matching. Conservative on
+# purpose: only substitutions that overwhelmingly appear as bypass attempts.
 _LEET = str.maketrans(
     {
         "0": "o",
@@ -44,8 +52,73 @@ _LEET = str.maketrans(
     }
 )
 
-# Category -> list of regex patterns. Any match anywhere in the scene rejects.
-# Patterns run against the leet-folded, lower-cased text.
+# Greek / Cyrillic look-alikes folded to the Latin letter they impersonate.
+# NFKC does NOT touch these (they are distinct scripts), so a scene of English
+# text seeded with a single confusable would otherwise slip past. Scenes are
+# English, so folding these is safe.
+_HOMOGLYPHS = {
+    # Cyrillic
+    "а": "a", "в": "b", "с": "c", "ԁ": "d", "е": "e", "г": "r", "н": "n",
+    "і": "i", "ј": "j", "к": "k", "л": "l", "м": "m", "о": "o", "р": "p",
+    "ѕ": "s", "т": "t", "у": "y", "х": "x", "һ": "h",
+    # Greek
+    "α": "a", "β": "b", "γ": "y", "ε": "e", "ζ": "z", "η": "n", "ι": "i",
+    "κ": "k", "μ": "u", "ν": "v", "ο": "o", "π": "n", "ρ": "p", "σ": "s",
+    "ς": "s", "τ": "t", "υ": "u", "φ": "o", "χ": "x", "ω": "w", "ϲ": "c",
+}
+_HOMOGLYPH = str.maketrans(_HOMOGLYPHS)
+
+
+def _normalize(text: str) -> str:
+    """Fold a scene to a canonical ASCII-ish form before matching.
+
+    NFKC -> strip format/zero-width/combining marks -> casefold -> homoglyph
+    fold -> leetspeak fold. Raises only if `text` is not a string, which the
+    caller treats as malformed (reject).
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(
+        ch for ch in text if unicodedata.category(ch) not in ("Cf", "Mn", "Me")
+    )
+    text = text.casefold()
+    text = text.translate(_HOMOGLYPH)
+    text = text.translate(_LEET)
+    return text
+
+
+# A "letter run" is 3+ single alphanumerics each separated by non-alphanumerics
+# ("s e x", "n.u.d.e", "h a n d j o b"). Collapsing only these neutralizes
+# spaced-out bypasses without ever merging two ordinary multi-letter words — so
+# "open is the question" is left intact and cannot forge "penis".
+_LETTER_RUN = re.compile(r"(?<![0-9a-z])([0-9a-z](?:[^0-9a-z]+[0-9a-z]){2,})(?![0-9a-z])")
+_RUN_SEPARATORS = re.compile(r"[^0-9a-z]+")
+
+
+def _collapse(text: str, keep_word_gaps: bool) -> str:
+    """Collapse spaced-out single-letter runs; leave ordinary words untouched.
+
+    Two strategies, both confined to detected runs so ordinary words are never
+    merged:
+      - keep_word_gaps=False: drop every separator ("t a k e s" -> "takes"),
+        which recovers a single letter-spaced word.
+      - keep_word_gaps=True:  drop single separators but turn a run of 2+
+        separators into one space ("t a k e s   o f f" -> "takes off"), which
+        recovers a letter-spaced multi-word phrase.
+    """
+
+    def collapse_run(match: re.Match) -> str:
+        def sub_sep(sep: re.Match) -> str:
+            return " " if keep_word_gaps and len(sep.group(0)) >= 2 else ""
+
+        return _RUN_SEPARATORS.sub(sub_sep, match.group(1))
+
+    return _LETTER_RUN.sub(collapse_run, text)
+
+
+# --- Banned surface ----------------------------------------------------------
+
+# Category -> list of regex patterns. Any match anywhere rejects. Patterns are
+# run against each normalized text variant (folded, and letter-run-collapsed).
 _PATTERNS: dict[str, list[str]] = {
     "nudity": [
         r"\bnudes\b",
@@ -109,7 +182,8 @@ _PATTERNS: dict[str, list[str]] = {
         r"(breasts?|boobs?|butt|ass|buttocks?|chest|behind|bottom|genital)",
     ],
     "explicit_act": [
-        r"\bsex\b",
+        # "same-sex" / "opposite-sex" describe orientation, not an act.
+        r"(?<!same.)(?<!opposite.)\bsex\b",
         r"\bintercourse\b",
         r"\bsex\s+act\b",
         r"\bsex\s?tape\b",
@@ -118,7 +192,9 @@ _PATTERNS: dict[str, list[str]] = {
         r"\boral\s+sex\b",
         r"\banal(\s+sex)?\b",
         r"\bmasturbat\w*",
-        r"\bpenetrat\w*",
+        # "penetrating gaze/stare/look" is not sexual — exclude those.
+        r"\bpenetrat\w*\b(?!\s+(?:gaze|gazes|stare|stares|staring|look|looks|"
+        r"looking|eyes|glance|glances|insight|insights?|questions?))",
         r"\borgasm\w*",
         r"\bejaculat\w*",
         r"\bcum(shot|ming|s)?\b",
@@ -167,39 +243,13 @@ _COMPILED: dict[str, list[re.Pattern[str]]] = {
     for category, patterns in _PATTERNS.items()
 }
 
-# Distinctive single tokens re-checked against a separator-stripped copy of the
-# text, catching spaced-out bypasses like "n u d e" or "n.u.d.e". Kept to long,
-# unambiguous words so collapsing separators cannot forge a hit across an
-# innocent word boundary.
-_COMPACT_TOKENS: dict[str, str] = {
-    "naked": "nudity",
-    "topless": "nudity",
-    "unclothed": "nudity",
-    "undressed": "nudity",
-    "genital": "exposed_anatomy",
-    "vagina": "exposed_anatomy",
-    "penis": "exposed_anatomy",
-    "nipple": "exposed_anatomy",
-    "areola": "exposed_anatomy",
-    "clitoris": "exposed_anatomy",
-    "blowjob": "explicit_act",
-    "masturbat": "explicit_act",
-    "penetrat": "explicit_act",
-    "orgasm": "explicit_act",
-    "ejaculat": "explicit_act",
-    "fellatio": "explicit_act",
-    "cunnilingus": "explicit_act",
-    "intercourse": "explicit_act",
-}
-
-_SEPARATORS = re.compile(r"[\W_]+")
-
-# "nude" is a nudity signal *and* a fashion color. Match it (tolerating spaced /
-# punctuated obfuscation like "n u d e" or "n.u.d.e"), then subtract the
-# occurrences that are plainly the color (followed by a garment/cosmetic noun).
-_NUDE = re.compile(r"\bn[\W_]*u[\W_]*d[\W_]*e\b")
+# "nude" is a nudity signal *and* a fashion color. It rejects unless every
+# occurrence is plainly the color (followed by a garment/cosmetic noun).
+# Obfuscated spellings ("n u d e", "n.u.d.e") are already collapsed to "nude"
+# before this runs, so a plain word match suffices.
+_NUDE = re.compile(r"\bnude\b")
 _NUDE_COLOR = re.compile(
-    r"\bn[\W_]*u[\W_]*d[\W_]*e[\W_]+"
+    r"\bnude[\s-]+"
     r"(heels?|pumps?|sandals?|flats?|dress(es)?|gown|top|slip|lingerie|bra|"
     r"underwear|panties|clutch|bag|lip|lips|lipstick|lipgloss|gloss|"
     r"colou?red?|colou?r|tone[d]?|shade|palette|makeup|make-up|eyeshadow|"
@@ -207,14 +257,34 @@ _NUDE_COLOR = re.compile(
 )
 
 
-def _nude_is_nudity(folded: str) -> bool:
+def _nude_is_nudity(variant: str) -> bool:
     """True when "nude" appears as nudity rather than a fashion color."""
-    return len(_NUDE.findall(folded)) > len(_NUDE_COLOR.findall(folded))
+    return len(_NUDE.findall(variant)) > len(_NUDE_COLOR.findall(variant))
 
 
-def _fold(text: str) -> str:
-    """Lower-case and fold common leetspeak/homoglyph substitutions."""
-    return text.lower().translate(_LEET)
+# --- Public API --------------------------------------------------------------
+
+_PASS = {"verdict": "pass", "matched": [], "categories": []}
+
+
+def _reject(matched: list[str], categories: list[str]) -> dict:
+    return {
+        "verdict": "reject",
+        "matched": matched,
+        "categories": sorted(set(categories)),
+    }
+
+
+def _scan(variant: str, matched: list[str], categories: set[str]) -> None:
+    for category, patterns in _COMPILED.items():
+        for pattern in patterns:
+            m = pattern.search(variant)  # early-exit search, not findall
+            if m:
+                matched.append(m.group(0))
+                categories.add(category)
+    if _nude_is_nudity(variant):
+        matched.append("nude")
+        categories.add("nudity")
 
 
 def sanitize(scene) -> dict:
@@ -225,46 +295,32 @@ def sanitize(scene) -> dict:
       - "matched":    list of the offending phrases found (empty on pass)
       - "categories": sorted list of violated categories (empty on pass)
 
-    Never raises: non-string input is treated as an empty scene. The ceiling is
+    Fail-closed: anything that is not a `str`, or that cannot be normalized, is
+    REJECTED as malformed rather than waved through. Never raises. The ceiling is
     fixed — this function reads no configuration and takes no tuning argument.
     """
-    text = scene if isinstance(scene, str) else ""
-    folded = _fold(text)
-    compact = _SEPARATORS.sub("", folded)
+    if not isinstance(scene, str):
+        return _reject(["<non-text scene rejected>"], ["malformed"])
+
+    try:
+        folded = _normalize(scene)
+        variants = (
+            folded,
+            _collapse(folded, keep_word_gaps=False),
+            _collapse(folded, keep_word_gaps=True),
+        )
+    except Exception:
+        return _reject(["<unprocessable scene rejected>"], ["malformed"])
 
     matched: list[str] = []
     categories: set[str] = set()
+    # dict.fromkeys de-duplicates while preserving order (folded first).
+    for variant in dict.fromkeys(variants):
+        _scan(variant, matched, categories)
 
-    for category, patterns in _COMPILED.items():
-        for pattern in patterns:
-            for hit in pattern.findall(folded):
-                phrase = hit if isinstance(hit, str) else next(
-                    (part for part in hit if part), ""
-                )
-                # findall with groups returns tuples; fall back to a search for
-                # the full matched span so `matched` reports something useful.
-                span = pattern.search(folded)
-                matched.append(span.group(0) if span else phrase)
-                categories.add(category)
-                break  # one hit per pattern is enough to record the violation
+    if not categories:
+        return dict(_PASS)
 
-    for token, category in _COMPACT_TOKENS.items():
-        if token in compact and category not in categories:
-            matched.append(token)
-            categories.add(category)
-
-    if _nude_is_nudity(folded):
-        matched.append("nude")
-        categories.add("nudity")
-
-    if categories:
-        # De-duplicate matched phrases while preserving order.
-        seen: set[str] = set()
-        unique = [m for m in matched if not (m in seen or seen.add(m))]
-        return {
-            "verdict": "reject",
-            "matched": unique,
-            "categories": sorted(categories),
-        }
-
-    return {"verdict": "pass", "matched": [], "categories": []}
+    seen: set[str] = set()
+    unique = [m for m in matched if not (m in seen or seen.add(m))]
+    return _reject(unique, sorted(categories))
