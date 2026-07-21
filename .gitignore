@@ -4,3 +4,5 @@ __pycache__/
 .env
 assets/sophie/
 assets/
+
+.DS_Store
