@@ -2,6 +2,8 @@
 host's tool registry. A fake ctx records register_tool calls so we can assert the
 contract without the hermes-agent runtime present."""
 
+import json
+
 import yaml
 
 
@@ -47,7 +49,24 @@ def test_handler_dispatches_args_dict_to_tool(tmp_path, monkeypatch):
     handler = ctx.tools["luvia_score_response"]["handler"]
     # Extra kwargs (task_id/session_id the host passes) must be absorbed.
     result = handler({"answer": "dankjewel", "expected": "dankjewel"}, task_id="t1")
-    assert result["verdict"] == "exact"
+    assert json.loads(result)["verdict"] == "exact"
+
+
+def test_handler_returns_json_string_not_dict(tmp_path, monkeypatch):
+    """Hermes' tool registry accepts only a str result (or a multimodal
+    envelope); a raw dict is rejected as `tool_result_contract` and the call
+    silently fails. luvia tools return dicts, so the adapter must serialize
+    every return to a JSON string the agent can read back."""
+    monkeypatch.setenv("LUVIA_DB", str(tmp_path / "luvia.db"))
+    import plugin
+
+    ctx = FakeCtx()
+    plugin.register(ctx)
+
+    handler = ctx.tools["luvia_score_response"]["handler"]
+    result = handler({"answer": "hoi", "expected": "hoi"})
+    assert isinstance(result, str), "Hermes rejects non-str handler results"
+    assert json.loads(result)["verdict"] == "exact"
 
 
 def test_every_schema_is_well_formed():

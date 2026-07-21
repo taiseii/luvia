@@ -13,6 +13,8 @@ never sets the clock; only tests do.
 
 from __future__ import annotations
 
+import json
+
 from . import tools
 
 TOOLSET = "luvia"
@@ -20,7 +22,12 @@ TOOLSET = "luvia"
 
 def _handler(fn):
     def handler(args, **_):
-        return fn(**args)
+        # Hermes' tool registry accepts only a str result (or a multimodal
+        # envelope); a raw dict is rejected as `tool_result_contract` and the
+        # call silently fails. luvia tools return dicts, so serialize to a JSON
+        # string the agent reads back. default=str covers Path/datetime fields
+        # (e.g. luvia_selfie's saved-file path).
+        return json.dumps(fn(**args), ensure_ascii=False, default=str)
 
     return handler
 
