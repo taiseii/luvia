@@ -7,6 +7,8 @@ so the fixtures drive selfie_log rows across time and assert the quota at its ed
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 NOW = datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc)
 
 
@@ -118,3 +120,66 @@ def test_quota_recomputes_from_the_database_file(tmp_path, monkeypatch):
     # A fresh connection (cron run, no chat memory) reads the same verdict from disk.
     conn2 = store.connect()
     assert store.selfie_allowance(conn2, 1, NOW)["request"] == 2
+
+
+def test_non_utc_offset_input_is_counted_by_real_instant(tmp_path, monkeypatch):
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    tz_plus2 = timezone(timedelta(hours=2))
+
+    # 2026-07-19T11:00+02:00 == 2026-07-19T09:00Z, which is 25h before NOW: OUTSIDE
+    # the 24h window. Its lexical string "2026-07-19T11..." sorts AFTER the window
+    # boundary "2026-07-19T10:00+00:00", so a raw-string compare would miscount it
+    # as inside. The real instant is what must decide.
+    outside = datetime(2026, 7, 19, 11, 0, tzinfo=tz_plus2)
+    store.log_selfie(conn, 1, "request", outside)
+    assert store.selfie_allowance(conn, 1, NOW)["request"] == 3
+
+    # 2026-07-20T11:30+02:00 == 2026-07-20T09:30Z, 30 min before NOW: INSIDE.
+    inside = datetime(2026, 7, 20, 11, 30, tzinfo=tz_plus2)
+    store.log_selfie(conn, 1, "request", inside)
+    assert store.selfie_allowance(conn, 1, NOW)["request"] == 2
+
+
+def test_non_utc_now_is_evaluated_by_real_instant(tmp_path, monkeypatch):
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    store.log_selfie(conn, 1, "proactive", NOW - timedelta(hours=1))
+
+    # Same instant as NOW, expressed at +02:00. The proactive spent an hour ago
+    # must still register regardless of the offset carried by `now`.
+    now_plus2 = NOW.astimezone(timezone(timedelta(hours=2)))
+    assert store.selfie_allowance(conn, 1, now_plus2)["proactive"] == 0
+
+
+def test_naive_timestamp_is_rejected(tmp_path, monkeypatch):
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    naive = datetime(2026, 7, 20, 10, 0)  # no tzinfo
+
+    with pytest.raises(ValueError):
+        store.log_selfie(conn, 1, "request", naive)
+    # Nothing was written: a rejected timestamp consumes no quota.
+    assert conn.execute("SELECT COUNT(*) FROM selfie_log").fetchone()[0] == 0
+
+
+def test_naive_now_is_rejected(tmp_path, monkeypatch):
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        store.selfie_allowance(conn, 1, datetime(2026, 7, 20, 10, 0))
+
+
+def test_unknown_trigger_source_is_rejected_and_writes_nothing(tmp_path, monkeypatch):
+    from plugin import store
+
+    conn = _connect(tmp_path, monkeypatch)
+
+    # A typo'd source must not slip through as an uncounted selfie (silent bypass).
+    with pytest.raises(ValueError):
+        store.log_selfie(conn, 1, "on_request", NOW)
+    assert conn.execute("SELECT COUNT(*) FROM selfie_log").fetchone()[0] == 0

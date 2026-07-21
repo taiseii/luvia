@@ -140,6 +140,11 @@ CREATE TABLE IF NOT EXISTS experiment_arms (
 CREATE TABLE IF NOT EXISTS selfie_log (
   id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
-  trigger_source TEXT NOT NULL,        -- proactive | request
+  trigger_source TEXT NOT NULL CHECK (trigger_source IN ('proactive', 'request')),
   created_at TEXT NOT NULL             -- UTC ISO 8601 timestamp
 );
+
+-- Serves the hot quota read: count a learner's selfies of one source over a
+-- trailing window.
+CREATE INDEX IF NOT EXISTS idx_selfie_log_quota
+  ON selfie_log (user_id, trigger_source, created_at);
