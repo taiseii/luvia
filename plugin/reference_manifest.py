@@ -29,6 +29,17 @@ ASSETS_ENV_VAR = "LUVIA_SOPHIA_ASSETS"
 # unspecified, or not present in the manifest.
 CANONICAL_FACE_ROLE = "canonical_face"
 
+_REQUIRED_FIELDS = ("file", "role", "framing", "setting", "description", "default")
+
+
+class ReferenceManifestError(Exception):
+    """Raised when the reference manifest is missing, malformed, or unsafe.
+
+    Carries enough context (the manifest path and the offending row/field) to
+    make on-box authoring mistakes debuggable instead of surfacing later as an
+    opaque backend failure.
+    """
+
 
 @dataclass(frozen=True)
 class Reference:
@@ -59,7 +70,7 @@ def assets_dir(assets_dir: Path | str | None = None) -> Path:
         return Path(assets_dir)
     env = os.environ.get(ASSETS_ENV_VAR)
     if not env:
-        raise RuntimeError(
+        raise ReferenceManifestError(
             f"{ASSETS_ENV_VAR} is not set and no assets_dir was provided; "
             "the reference library location is unknown."
         )
@@ -67,23 +78,96 @@ def assets_dir(assets_dir: Path | str | None = None) -> Path:
 
 
 def load_reference_manifest(assets_dir_path: Path | str | None = None) -> list[Reference]:
-    """Parse ``manifest.json`` into Reference rows with resolved absolute paths."""
+    """Parse ``manifest.json`` into Reference rows with resolved absolute paths.
+
+    Every row is validated at load: required fields present, the ``file`` path
+    contained within the assets dir (no ``../`` escape, no absolute path, no
+    symlink out), and the target image actually present on disk. A resolver that
+    hands back a Reference is thus one the backend can trust.
+    """
     directory = assets_dir(assets_dir_path)
+    base = directory.resolve()
     manifest_path = directory / MANIFEST_FILENAME
-    rows = json.loads(manifest_path.read_text())
-    return [
-        Reference(
-            file=row["file"],
-            role=row["role"],
-            framing=row["framing"],
-            setting=row["setting"],
-            tags=tuple(row.get("tags", [])),
-            description=row["description"],
-            default=bool(row["default"]),
-            path=(directory / row["file"]).resolve(),
+
+    try:
+        raw = manifest_path.read_text()
+    except OSError as exc:
+        raise ReferenceManifestError(
+            f"cannot read reference manifest at {manifest_path}: {exc}"
+        ) from exc
+
+    try:
+        rows = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ReferenceManifestError(
+            f"{manifest_path} is not valid JSON: {exc}"
+        ) from exc
+
+    if not isinstance(rows, list):
+        raise ReferenceManifestError(
+            f"{manifest_path} must contain a JSON array of image rows."
         )
-        for row in rows
+
+    return [
+        _build_reference(row, index, base, manifest_path)
+        for index, row in enumerate(rows)
     ]
+
+
+def _build_reference(row: object, index: int, base: Path, manifest_path: Path) -> Reference:
+    if not isinstance(row, dict):
+        raise ReferenceManifestError(
+            f"{manifest_path} row {index} is not a JSON object."
+        )
+    for field in _REQUIRED_FIELDS:
+        if field not in row:
+            raise ReferenceManifestError(
+                f"{manifest_path} row {index} is missing required field '{field}'."
+            )
+
+    file = row["file"]
+    path = _resolve_contained_path(file, index, base, manifest_path)
+
+    return Reference(
+        file=file,
+        role=row["role"],
+        framing=row["framing"],
+        setting=row["setting"],
+        tags=tuple(row.get("tags", [])),
+        description=row["description"],
+        default=bool(row["default"]),
+        path=path,
+    )
+
+
+def _resolve_contained_path(file: str, index: int, base: Path, manifest_path: Path) -> Path:
+    """Resolve ``file`` under ``base``, rejecting escapes and missing images.
+
+    The ``file`` value is manifest-controlled and must never be trusted to stay
+    inside the library: an absolute path, a ``../`` climb, or a symlink pointing
+    out would let a tampered manifest read arbitrary files. So we reject absolute
+    paths outright and require the *resolved* path to remain within the assets
+    dir, then confirm the image actually exists.
+    """
+    candidate = Path(file)
+    if candidate.is_absolute():
+        raise ReferenceManifestError(
+            f"{manifest_path} row {index} file '{file}' must be relative to the "
+            "assets dir, not an absolute path."
+        )
+
+    resolved = (base / candidate).resolve()
+    if not resolved.is_relative_to(base):
+        raise ReferenceManifestError(
+            f"{manifest_path} row {index} file '{file}' resolves outside the "
+            f"assets dir ({base}); path traversal is not allowed."
+        )
+    if not resolved.is_file():
+        raise ReferenceManifestError(
+            f"{manifest_path} row {index} references missing image file '{file}' "
+            f"(expected at {resolved})."
+        )
+    return resolved
 
 
 def resolve_reference_role(
@@ -94,7 +178,7 @@ def resolve_reference_role(
 
     A role that matches manifest rows returns the default-flagged match (or the
     first match if none is flagged). A missing, empty, or unknown role falls back
-    to the canonical face portrait — the single ``default`` row.
+    to the canonical face portrait — the default-flagged canonical-face row.
     """
     manifest = load_reference_manifest(assets_dir)
 
@@ -110,10 +194,24 @@ def resolve_reference_role(
 
 
 def _default_portrait(manifest: list[Reference]) -> Reference:
-    """The fallback reference: the single default-flagged canonical face portrait."""
-    for ref in manifest:
-        if ref.default:
-            return ref
-    raise ValueError(
-        "reference manifest declares no default portrait; cannot apply fallback."
-    )
+    """The fallback reference: the default-flagged canonical-face portrait.
+
+    The fallback must be the portrait specifically — a ``default`` flag on a pose
+    row must not hijack missing/unknown-role resolution into returning a pose, or
+    the portrait-fallback invariant breaks. We require exactly one default
+    canonical-face row.
+    """
+    portraits = [
+        ref for ref in manifest if ref.default and ref.role == CANONICAL_FACE_ROLE
+    ]
+    if not portraits:
+        raise ReferenceManifestError(
+            "reference manifest declares no default "
+            f"'{CANONICAL_FACE_ROLE}' portrait; cannot apply fallback."
+        )
+    if len(portraits) > 1:
+        raise ReferenceManifestError(
+            "reference manifest declares multiple default "
+            f"'{CANONICAL_FACE_ROLE}' portraits; the fallback is ambiguous."
+        )
+    return portraits[0]

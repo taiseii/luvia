@@ -12,6 +12,7 @@ import json
 import pytest
 
 from plugin import reference_manifest
+from plugin.reference_manifest import ReferenceManifestError
 
 
 # A 5-row fixture that mirrors the on-box library shape: one canonical-face
@@ -170,7 +171,7 @@ def test_resolution_is_read_only_no_auto_growth(tmp_path, monkeypatch):
 def test_missing_assets_dir_raises(tmp_path, monkeypatch):
     monkeypatch.delenv("LUVIA_SOPHIA_ASSETS", raising=False)
 
-    with pytest.raises(Exception):
+    with pytest.raises(ReferenceManifestError):
         reference_manifest.load_reference_manifest()
 
 
@@ -181,5 +182,99 @@ def test_manifest_without_default_portrait_raises_on_fallback(tmp_path, monkeypa
     _write_assets(tmp_path, rows)
     monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
 
-    with pytest.raises(Exception):
+    with pytest.raises(ReferenceManifestError):
         reference_manifest.resolve_reference_role(None)
+
+
+def test_traversal_file_escaping_assets_dir_is_rejected(tmp_path, monkeypatch):
+    # A tampered manifest must not read files outside the library via ../.
+    secret = tmp_path / "secret.txt"
+    secret.write_text("top secret")
+    assets = tmp_path / "assets"
+    rows = [dict(FIXTURE_ROWS[0], file="../secret.txt")]
+    _write_assets(assets, rows)
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(assets))
+
+    with pytest.raises(ReferenceManifestError):
+        reference_manifest.load_reference_manifest()
+
+
+def test_absolute_file_path_is_rejected(tmp_path, monkeypatch):
+    # Write the manifest directly; an absolute `file` must be rejected without
+    # the loader ever touching the target path.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    rows = [dict(FIXTURE_ROWS[0], file="/etc/passwd")]
+    (tmp_path / "manifest.json").write_text(json.dumps(rows))
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
+
+    with pytest.raises(ReferenceManifestError):
+        reference_manifest.load_reference_manifest()
+
+
+def test_symlink_escaping_assets_dir_is_rejected(tmp_path, monkeypatch):
+    # A symlink inside the assets dir pointing out must not smuggle a read past
+    # the containment check — resolution follows the link, then we reject it.
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside-bytes")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "escape.png").symlink_to(outside)
+    (assets / "manifest.json").write_text(
+        json.dumps([dict(FIXTURE_ROWS[0], file="escape.png")])
+    )
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(assets))
+
+    with pytest.raises(ReferenceManifestError):
+        reference_manifest.load_reference_manifest()
+
+
+def test_missing_image_file_is_caught_at_load(tmp_path, monkeypatch):
+    # File named in the manifest but never placed on disk: fail at load with a
+    # message naming the bad file, not later in the backend.
+    rows = [r.copy() for r in FIXTURE_ROWS]
+    _write_assets(tmp_path, rows)
+    (tmp_path / "pose_cafe_half.png").unlink()  # remove one referenced image
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
+
+    with pytest.raises(ReferenceManifestError) as excinfo:
+        reference_manifest.load_reference_manifest()
+    assert "pose_cafe_half.png" in str(excinfo.value)
+
+
+def test_default_flag_on_pose_does_not_hijack_portrait_fallback(tmp_path, monkeypatch):
+    # A pose flagged default must not become the missing/unknown-role fallback;
+    # the fallback is the canonical-face portrait specifically.
+    rows = [
+        dict(FIXTURE_ROWS[0], default=True),   # canonical_face portrait, default
+        dict(FIXTURE_ROWS[1], default=True),   # a pose ALSO flagged default
+        FIXTURE_ROWS[2],
+        FIXTURE_ROWS[3],
+        FIXTURE_ROWS[4],
+    ]
+    _write_assets(tmp_path, rows)
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
+
+    ref = reference_manifest.resolve_reference_role(None)
+
+    assert ref.role == "canonical_face"
+    assert ref.file == "canonical_portrait.png"
+
+
+def test_malformed_json_raises_manifest_error(tmp_path, monkeypatch):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "manifest.json").write_text("{not valid json,,,")
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
+
+    with pytest.raises(ReferenceManifestError):
+        reference_manifest.load_reference_manifest()
+
+
+def test_missing_required_field_raises_manifest_error(tmp_path, monkeypatch):
+    bad = FIXTURE_ROWS[0].copy()
+    del bad["role"]
+    _write_assets(tmp_path, [bad])
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
+
+    with pytest.raises(ReferenceManifestError) as excinfo:
+        reference_manifest.load_reference_manifest()
+    assert "role" in str(excinfo.value)
