@@ -136,6 +136,24 @@ _TOOLS = (
             "required": ["user_id", "lang"],
         },
     ),
+    (
+        tools.luvia_selfie,
+        "Generate an in-character selfie by editing a fixed reference of Sophia with a scene. Returns {ok, path, ...} on success (deliver the path via send_message MEDIA:<path> <caption>); on any block/cap/failure returns a soft-fail {ok: false, reason, ...} to absorb in character — it never errors. reference_role defaults to canonical_face; trigger_source is 'proactive' (rare, routine-tied) or 'request'.",
+        {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "integer"},
+                "scene": {"type": "string"},
+                "reference_role": {"type": "string", "default": "canonical_face"},
+                "trigger_source": {
+                    "type": "string",
+                    "enum": ["proactive", "request"],
+                    "default": "request",
+                },
+            },
+            "required": ["user_id", "scene"],
+        },
+    ),
 )
 
 

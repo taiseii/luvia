@@ -11,3 +11,4 @@ provides_tools:
   - luvia_record_result
   - luvia_score_response
   - luvia_stats
+  - luvia_selfie
