@@ -434,28 +434,96 @@ def test_invalid_user_id_soft_fails_before_backend(tmp_path, monkeypatch, bad_us
     assert _selfie_rows(db_path) == []
 
 
-def test_two_rapid_saves_do_not_collide(tmp_path, monkeypatch):
+def test_exclusive_create_refuses_to_overwrite_existing_file(tmp_path, monkeypatch):
+    """Force the filename to collide deterministically: exclusive-create ('xb')
+    must refuse the second write rather than clobber the first. If the open mode
+    were 'wb' this would silently overwrite and the test would fail."""
+    import uuid as uuid_mod
+
     db_path = tmp_path / "luvia.db"
     monkeypatch.setenv("LUVIA_DB", str(db_path))
     user_id = _new_user()
     _patch_resolver(monkeypatch, _fake_reference(tmp_path))
     out = tmp_path / "selfies"
 
+    # Pin uuid4 so both saves target the exact same path.
+    fixed = uuid_mod.UUID(int=0)
+    monkeypatch.setattr("plugin.tools.uuid.uuid4", lambda: fixed)
+
     from plugin.tools import luvia_selfie
 
-    # Same user, source, and timestamp on both calls.
     first = luvia_selfie(
         user_id=user_id, scene="one", trigger_source="request",
-        now=NOW, backend=FakeBackend(), output_dir=out,
+        now=NOW, backend=FakeBackend(image=IMG_BYTES), output_dir=out,
     )
+    assert first["ok"] is True
+    first_path = Path(first["path"])
+    assert first_path.read_bytes() == IMG_BYTES
+
+    # Identical user/source/timestamp/uuid — the target path already exists.
     second = luvia_selfie(
         user_id=user_id, scene="two", trigger_source="request",
-        now=NOW, backend=FakeBackend(), output_dir=out,
+        now=NOW, backend=FakeBackend(image=b"OVERWRITE-ATTEMPT"), output_dir=out,
+    )
+    assert second["ok"] is False
+    assert second["reason"] == "save_failed"
+    # The first file is untouched, no second file exists, no extra row logged.
+    assert first_path.read_bytes() == IMG_BYTES
+    assert _png_files(out) == [first_path]
+    assert _selfie_rows(db_path) == [(user_id, "request")]
+
+
+def test_save_write_failure_leaves_no_orphan(tmp_path, monkeypatch):
+    """The 'xb' open creates the file; a later write failure must not leave a
+    partial image behind — _save_selfie cleans up its own file before re-raising."""
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id = _new_user()
+    _patch_resolver(monkeypatch, _fake_reference(tmp_path))
+    backend = FakeBackend()
+    out = tmp_path / "selfies"
+
+    real_open = Path.open
+
+    class _ExplodingWriter:
+        """A real, on-disk file whose write() blows up after creation."""
+
+        def __init__(self, handle):
+            self._handle = handle
+
+        def write(self, data):
+            raise OSError("simulated write failure after file creation")
+
+        def close(self):
+            try:
+                self._handle.close()
+            except OSError:
+                pass
+
+    def fake_open(self, mode="r", *args, **kwargs):
+        handle = real_open(self, mode, *args, **kwargs)  # actually creates the file
+        if "x" in mode:
+            return _ExplodingWriter(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    from plugin.tools import luvia_selfie
+
+    result = luvia_selfie(
+        user_id=user_id,
+        scene="cafe selfie",
+        trigger_source="request",
+        now=NOW,
+        backend=backend,
+        output_dir=out,
     )
 
-    assert first["ok"] is True and second["ok"] is True
-    assert first["path"] != second["path"]
-    assert len(_png_files(out)) == 2
+    assert result["ok"] is False
+    assert result["reason"] == "save_failed"
+    # No quota consumed and the partially-created file was removed.
+    assert _selfie_rows(db_path) == []
+    assert _png_files(out) == []
 
 
 # --- Finding 4: nonexistent user_id validated before backend spend ------------

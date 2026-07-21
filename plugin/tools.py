@@ -485,8 +485,22 @@ def _save_selfie(image_bytes: bytes, output_dir, user_id: int,
     base.mkdir(parents=True, exist_ok=True)
     stamp = at.strftime("%Y%m%dT%H%M%S%f")
     path = base / f"selfie_{user_id}_{stamp}_{trigger_source}_{uuid.uuid4().hex}.png"
-    with path.open("xb") as fh:
+    # 'xb' fails if the path already exists (exclusive create): a pre-existing
+    # file is not ours to remove, so that error propagates untouched. But once WE
+    # have created the file, any later failure (write/flush/close) must not leave
+    # a partial image behind — so the write is guarded to unlink our own file
+    # before re-raising, and the caller turns the re-raise into a save_failed.
+    fh = path.open("xb")
+    try:
         fh.write(image_bytes)
+        fh.close()
+    except Exception:  # noqa: BLE001 — clean up our partial file, then re-raise
+        try:
+            fh.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _unlink_quietly(path)
+        raise
     return path
 
 
