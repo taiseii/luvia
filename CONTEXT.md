@@ -62,5 +62,5 @@ The fixed, hand-curated set of images of a carrier persona (one canonical face p
 _Avoid_: dataset, training set (nothing is trained)
 
 **Persona routine**:
-A carrier persona's simulated daily life (time-blocks of activity, location, mood) that colors its texting tone, felt availability, and selfie scenes by time of day. Persona flavor authored in the skill, never plugin state; the current activity is inferred from the clock, not stored.
+A carrier persona's simulated daily life (time-blocks of activity, location, mood) that colors its texting tone, felt availability, and selfie scenes by time of day. Persona flavor authored in the skill, never plugin state; the current activity is inferred from the clock — the learner's local clock (their timezone, captured once at onboarding), so the persona shares the learner's time-of-day rather than a separate location. Not stored.
 _Avoid_: schedule, calendar (imply the plugin owns it)
