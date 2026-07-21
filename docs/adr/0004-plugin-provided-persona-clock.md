@@ -1,18 +1,20 @@
-# Persona clock provided by the plugin (`luvia_now`), not the host
+# Persona clock via gateway message-timestamp injection, not a plugin tool
 
-The persona routine (CONTEXT.md) infers the carrier persona's current activity from the learner's local time-of-day. The runtime does not supply that time-of-day: Hermes injects only the current **date** into the system prompt — deliberately, minute precision would invalidate the prefix-cache KV on every rebuild — and its timezone defaults to the server's (UTC). Recalled memory carries the learner's IANA timezone but is static text; it cannot compute "now." So the persona has no hour in context and guesses the block (it wished the learner "goedemorgen" at 01:00 local).
+The persona routine (CONTEXT.md) infers the carrier persona's current activity from the learner's local time-of-day. The runtime does not put that time-of-day where the persona can see it by default: Hermes injects only the **date** into the system prompt (minute precision would invalidate the prefix-cache KV on every rebuild), and its timezone defaults to the server's (UTC). So the persona had no hour in context and guessed the block — it wished the learner "goedemorgen" at 01:00 local.
 
-The obvious fix — have Hermes inject the time-of-day, or add a host time-tool — is closed to us on two counts. ADR-0001 and the glossary hold that Luvia extends Hermes but never modifies it, and passive per-turn context injection is only exposed to `kind: memory-provider` plugins (via `system_prompt_block`), not to a `kind: standalone` tool plugin like Luvia. The hour therefore has to be **computed fresh**, which means a tool call.
+**Decision.** Turn on Hermes' own per-message clock rather than building one in the plugin. The gateway has a `message_timestamps` feature (`gateway/message_timestamps.py`), OFF by default, that prefixes every inbound user message the model sees with a timezone-aware `[%a %Y-%m-%d %H:%M:%S %Z]` stamp (e.g. `[Tue 2026-07-22 01:40:53 CEST]`), rendered in the timezone `hermes_time` resolves. We enable it in the box `config.yaml` (`gateway.message_timestamps.enabled: true`) and set the timezone to the learner's (`Europe/Amsterdam`). The **skill** reads that prefix on the latest message as "now" and maps it to the routine block (the plugin never holds the block table — persona flavor stays in the skill, per ADR-0001).
 
-**Decision.** Luvia owns the persona clock. A dedicated tool, `luvia_now`, returns the current local time and weekday computed from the learner's stored `users.timezone`; the **skill** maps that time to a routine block (the plugin never holds the block table — persona flavor stays in the skill, per ADR-0001). Every other luvia tool result is additionally stamped with `local_time` as defense-in-depth, so any tool call refreshes the persona's clock even if it skips `luvia_now`.
+This is passive: the hour is in context on every turn with no tool call, so it does not depend on the persona choosing to act — the property that makes it reliable. It is a config toggle, so it respects "Luvia never modifies Hermes."
 
 ## Considered options
 
-- **Piggyback the clock on `luvia_plan_today`.** Rejected: `plan_today` runs once per day (first exchange), so its time-of-day is stale by evening — the wrong cadence for a per-wake clock.
-- **Set `HERMES_TIMEZONE` and rely on the injected timestamp.** Insufficient alone: the injection is date-only by design; a correct timezone still yields no hour. (Still worth setting so the host's date rolls at the learner's midnight, but it does not solve the persona clock.)
-- **Become / register a memory-provider to gain `system_prompt_block`.** Rejected: a large change to the plugin's kind and lifecycle to buy passive injection Luvia does not otherwise need.
+- **A plugin-provided `luvia_now` tool** (computing local time from `users.timezone`), backstopped by stamping `local_time` on every luvia return. This was the *first draft of this ADR*, chosen before the gateway feature was found. Rejected once `message_timestamps` surfaced: a tool clock depends on the persona calling it (demonstrably unreliable this project), goes stale between calls, and adds plugin code for something the host already does passively and correctly.
+- **Rely on the system-prompt timestamp.** Insufficient: date-only by design; a correct timezone still yields no hour.
+- **Modify Hermes to inject time-of-day into the system prompt.** Rejected: violates the never-modify-Hermes boundary, and is unnecessary given the gateway toggle.
 
 ## Consequences
 
-- The clock is only as reliable as the persona choosing to call a tool. The per-return `local_time` stamp and a hardened wake instruction ("first action each wake: `luvia_now`") mitigate this, but a turn that calls no luvia tool still has no fresh hour — an accepted limit of a tools-only plugin surface.
-- `users.timezone` becomes load-bearing for persona realism, not just record-keeping. A missing/invalid timezone must degrade safely (the skill asks the learner once, in character, and stores it).
+- `config.yaml` (box-only, never repo) gains `gateway.message_timestamps.enabled: true` and a `timezone`. This is host provisioning, alongside the other 0018 box config.
+- The timezone config becomes load-bearing for persona realism, not just record-keeping. A wrong/absent timezone renders the stamp in UTC and the persona reads the wrong block.
+- The skill must be told to read the leading `[...]` stamp as the current time; it is present on every message, so there is no freshness or cadence concern.
+- `users.timezone` (captured at onboarding) still records the learner's zone for plugin-side date logic, but the persona's *felt* clock now comes from the gateway stamp, not the plugin.
