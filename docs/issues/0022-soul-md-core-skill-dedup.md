@@ -1,7 +1,7 @@
 ---
 title: "Author persona/SOUL.md always-on core + dedup sophia-nl skill"
-status: ready-for-agent
-labels: [ready-for-agent]
+status: done
+labels: [done]
 ---
 
 ## Parent
