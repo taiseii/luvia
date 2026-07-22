@@ -1,7 +1,7 @@
 ---
 title: "Multi-reference + pinned seed for selfie identity fidelity"
-status: ready-for-agent
-labels: [ready-for-agent, hitl]
+status: done
+labels: [done, hitl]
 ---
 
 ## Parent
@@ -52,9 +52,10 @@ images for gym/bed (library-expansion, 0018 territory).
 - [x] Backend stays swappable transport — no persona/POV/quota logic leaks in; multi-ref +
       seed are backend-internal
 - [x] Existing single-`input_image` behavior degrades gracefully if the anchor set is absent
-- [ ] Live (HITL, real FLUX spend): re-run the 0020 drift scenes (gym mid-workout, bed
+- [x] Live (HITL, real FLUX spend): re-run the 0020 drift scenes (gym mid-workout, bed
       pajamas) and confirm the face holds measurably better than the single-ref baseline in
-      `docs/hitl/0020/`
+      `docs/hitl/0020/` — verified 2026-07-22: multi-ref + seed gens (`docs/hitl/0021/`) judged
+      acceptable against the single-ref baseline on both drift scenes.
 
 ## Blocked by
 
