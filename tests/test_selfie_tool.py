@@ -111,12 +111,69 @@ def test_happy_path_writes_row_and_returns_saved_path(tmp_path, monkeypatch):
     path = Path(result["path"])
     assert path.is_file()
     assert path.read_bytes() == IMG_BYTES
-    # The backend edited the resolved reference bytes with the scene prompt.
-    assert backend.calls == [(REF_BYTES, "sunny cafe selfie with a latte")]
+    # The backend edited the resolved reference bytes with the scene prompt,
+    # framed in code as a first-person selfie (front-camera for the default role).
+    assert len(backend.calls) == 1
+    ref_bytes, scene_prompt = backend.calls[0]
+    assert ref_bytes == REF_BYTES
+    assert scene_prompt.endswith("sunny cafe selfie with a latte")
+    assert "front camera" in scene_prompt
     # Reference role omitted -> resolver asked for the canonical_face default.
     assert captured["role"] == "canonical_face"
     # Exactly one selfie_log row, for this source.
     assert _selfie_rows(db_path) == [(user_id, "request")]
+
+
+def _patch_resolver_echo(monkeypatch, tmp_path):
+    """Resolver double whose returned reference echoes the requested role (as the
+    real resolver does for known roles), so POV framing can be exercised per role."""
+    def fake_resolve(reference_role, assets_dir=None):
+        return _fake_reference(tmp_path, role=reference_role or "canonical_face")
+
+    monkeypatch.setattr("plugin.tools.resolve_reference_role", fake_resolve)
+
+
+def test_selfie_pov_prefix_role_map():
+    """POV is pinned in code, role-aware: front-camera for close/mid roles, a
+    mirror selfie for full-body roles (an arm's-length shot can't show a full
+    body). Unknown roles fall back to front-camera, matching the canonical_face
+    portrait fallback. See CONTEXT Selfie + docs/adr/0002."""
+    from plugin.tools import _selfie_pov_prefix
+
+    for role in ("canonical_face", "half_body", "work_look"):
+        assert "front camera" in _selfie_pov_prefix(role)
+    for role in ("full_body_seated", "full_body_standing"):
+        assert "mirror selfie" in _selfie_pov_prefix(role)
+    assert "front camera" in _selfie_pov_prefix("unknown_role")
+
+
+def test_pov_prefix_prepended_to_scene_by_role(tmp_path, monkeypatch):
+    """The scene handed to the backend is the persona scene with the role's POV
+    prefix in front — the persona supplies what/where, the plugin fixes how it's
+    shot."""
+    monkeypatch.setenv("LUVIA_DB", str(tmp_path / "luvia.db"))
+    _patch_resolver_echo(monkeypatch, tmp_path)
+    user_id = _new_user()
+    backend = FakeBackend()
+
+    from plugin.tools import luvia_selfie
+
+    r1 = luvia_selfie(
+        user_id=user_id, scene="at a cafe", reference_role="canonical_face",
+        trigger_source="request", now=NOW, backend=backend,
+        output_dir=tmp_path / "s",
+    )
+    r2 = luvia_selfie(
+        user_id=user_id, scene="in the studio", reference_role="full_body_standing",
+        trigger_source="request", now=NOW, backend=backend,
+        output_dir=tmp_path / "s",
+    )
+
+    assert r1["ok"] and r2["ok"]
+    front_prompt = backend.calls[0][1]
+    mirror_prompt = backend.calls[1][1]
+    assert front_prompt.endswith("at a cafe") and "front camera" in front_prompt
+    assert mirror_prompt.endswith("in the studio") and "mirror selfie" in mirror_prompt
 
 
 def test_sanitizer_reject_soft_fails_without_row_or_backend(tmp_path, monkeypatch):

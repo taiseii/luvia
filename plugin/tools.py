@@ -517,6 +517,33 @@ def _selfie_soft_fail(reason: str, trigger_source: str, **extra) -> dict:
     return {"ok": False, "reason": reason, "trigger_source": trigger_source, **extra}
 
 
+# Full-body reference roles are shot as a mirror selfie: an arm's-length
+# front-camera frame cannot show a full body.
+_MIRROR_SELFIE_ROLES = frozenset({"full_body_seated", "full_body_standing"})
+
+_FRONT_CAMERA_POV = (
+    "A casual first-person selfie taken at arm's length on a phone front camera, "
+    "slightly high angle, candid amateur snapshot, natural lighting. "
+)
+_MIRROR_SELFIE_POV = (
+    "A casual full-length mirror selfie, phone held in one hand and visible in the "
+    "reflection, candid amateur snapshot, natural lighting. "
+)
+
+
+def _selfie_pov_prefix(reference_role: str) -> str:
+    """First-person selfie framing, pinned in code and role-aware.
+
+    A selfie must read as a phone shot the persona took, not a portrait someone
+    took of her (CONTEXT.md 'Selfie'). The POV is a rendering property fixed here
+    the same way ``safety_tolerance`` is — never left to the persona, so it can't
+    drift shot to shot. Full-body roles get a mirror selfie; everything else (and
+    any unknown role, matching the canonical_face fallback) a front-camera shot."""
+    if reference_role in _MIRROR_SELFIE_ROLES:
+        return _MIRROR_SELFIE_POV
+    return _FRONT_CAMERA_POV
+
+
 def luvia_selfie(
     user_id: int,
     scene: str,
@@ -584,10 +611,14 @@ def luvia_selfie(
         if allowance.get(trigger_source, 0) <= 0:
             return _selfie_soft_fail("quota_exceeded", trigger_source)
 
-        # 5. Edit the reference with the scene.
+        # 5. Edit the reference with the scene, framed as a first-person selfie.
+        #    POV is fixed in code (role-aware, off the resolved role) so every
+        #    shot reads as a selfie the persona took, not a portrait — the
+        #    persona supplies what/where, the plugin fixes how it's shot.
+        framed_scene = _selfie_pov_prefix(reference.role) + scene
         engine = backend or image_backend.BflFluxBackend()
         try:
-            image_bytes = engine.generate(reference_bytes, scene)
+            image_bytes = engine.generate(reference_bytes, framed_scene)
         except ImageBackendError as err:
             return _selfie_soft_fail("backend_error", trigger_source, detail=err.reason)
 
