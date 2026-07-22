@@ -9,7 +9,11 @@ from pathlib import Path
 
 from . import image_backend, pacing, scheduler, scoring, store
 from .image_backend import ImageBackendError
-from .reference_manifest import ReferenceManifestError, resolve_reference_role
+from .reference_manifest import (
+    ReferenceManifestError,
+    identity_anchor_references,
+    resolve_reference_role,
+)
 from .sanitizer import sanitize
 
 LANGUAGE_NAMES = {"nl": "Dutch", "en": "English"}
@@ -544,6 +548,53 @@ def _selfie_pov_prefix(reference_role: str) -> str:
     return _FRONT_CAMERA_POV
 
 
+SELFIE_SEED_ENV = "LUVIA_SELFIE_SEED"
+# A stable per-persona seed so her face reads consistent shot to shot out of the
+# box (0021). Pinned in code, overridable via env; the sentinel 0 opts out.
+DEFAULT_SELFIE_SEED = 20260722
+
+
+def _selfie_seed() -> int | None:
+    """The persona's image seed, read from env on every call (a cron run
+    reconstructs it with no chat memory, like the request ceiling).
+
+    Defaults to the stable ``DEFAULT_SELFIE_SEED`` so the face is reproducible
+    shot to shot. A positive int in ``LUVIA_SELFIE_SEED`` overrides it; the
+    sentinel ``0`` disables the pin (returns None, so BFL picks a fresh random
+    seed each shot); anything malformed falls back to the default rather than
+    fail. The seed is a rendering property fixed in code/config, never
+    persona-chosen — same split as the pinned POV."""
+    raw = os.environ.get(SELFIE_SEED_ENV)
+    if raw is None:
+        return DEFAULT_SELFIE_SEED
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SELFIE_SEED
+    if value == 0:
+        return None
+    return value
+
+
+def _resolve_anchor_bytes(reference, assets_dir) -> list[bytes]:
+    """Read the fixed identity-anchor images, minus the primary (no double-send).
+
+    Best-effort: any failure to resolve or read the anchor set yields an empty
+    list, degrading to a single-reference generation rather than soft-failing the
+    selfie. The primary reference is excluded by path so an anchor that *is* the
+    primary (a canonical_face selfie) is never sent twice."""
+    try:
+        anchors = identity_anchor_references(assets_dir)
+        out = []
+        for anchor in anchors:
+            if anchor.path == reference.path:
+                continue
+            out.append(anchor.path.read_bytes())
+        return out
+    except (ReferenceManifestError, OSError):
+        return []
+
+
 def luvia_selfie(
     user_id: int,
     scene: str,
@@ -593,6 +644,13 @@ def luvia_selfie(
     except (ReferenceManifestError, OSError):
         return _selfie_soft_fail("reference_unavailable", trigger_source)
 
+    # Identity anchors ride alongside the primary so the backend triangulates the
+    # face on big edits. Anchors are best-effort: a missing/unreadable anchor set
+    # degrades to a single-reference generation rather than soft-failing the whole
+    # selfie. The primary is dropped from the set (path match) so it is never sent
+    # twice — e.g. a canonical_face selfie is its own anchor.
+    anchor_bytes = _resolve_anchor_bytes(reference, assets_dir)
+
     conn = store.connect()
     # Autocommit mode so the quota re-check + log below can run inside one
     # explicit BEGIN IMMEDIATE (see step 6).
@@ -616,9 +674,11 @@ def luvia_selfie(
         #    shot reads as a selfie the persona took, not a portrait — the
         #    persona supplies what/where, the plugin fixes how it's shot.
         framed_scene = _selfie_pov_prefix(reference.role) + scene
-        engine = backend or image_backend.BflFluxBackend()
+        engine = backend or image_backend.BflFluxBackend(seed=_selfie_seed())
         try:
-            image_bytes = engine.generate(reference_bytes, framed_scene)
+            image_bytes = engine.generate(
+                reference_bytes, framed_scene, extra_references=anchor_bytes
+            )
         except ImageBackendError as err:
             return _selfie_soft_fail("backend_error", trigger_source, detail=err.reason)
 

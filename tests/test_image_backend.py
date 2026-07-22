@@ -488,3 +488,84 @@ def test_reads_are_bounded_with_max_bytes():
 
     # Every call passed a positive byte cap down to the transport.
     assert all(c.max_bytes and c.max_bytes > 0 for c in transport.calls)
+
+
+# --- multi-reference: identity anchors travel as input_image_2..N ---------
+
+
+def test_extra_references_travel_as_numbered_input_images():
+    transport = FakeTransport([_submit_ok(), _poll_ready(), _download_ok()])
+    backend = _make_backend(transport)
+    anchor_one = b"\x89PNG\r\n\x1a\n anchor face pixels one"
+    anchor_two = b"\x89PNG\r\n\x1a\n anchor face pixels two"
+
+    backend.generate(
+        REFERENCE_BYTES,
+        "at the gym, mirror selfie",
+        extra_references=[anchor_one, anchor_two],
+    )
+
+    payload = json.loads(transport.calls[0].body)
+    # Primary reference stays input_image; anchors follow as 2, 3, ...
+    assert base64.b64decode(payload["input_image"]) == REFERENCE_BYTES
+    assert base64.b64decode(payload["input_image_2"]) == anchor_one
+    assert base64.b64decode(payload["input_image_3"]) == anchor_two
+
+
+def test_no_extra_references_sends_only_input_image():
+    transport = FakeTransport([_submit_ok(), _poll_ready(), _download_ok()])
+    backend = _make_backend(transport)
+
+    backend.generate(REFERENCE_BYTES, "bedroom, soft light")
+
+    payload = json.loads(transport.calls[0].body)
+    assert "input_image_2" not in payload
+
+
+# --- seed: pinned for reproducible identity shot-to-shot ------------------
+
+
+def test_seed_is_sent_in_payload_when_configured():
+    transport = FakeTransport([_submit_ok(), _poll_ready(), _download_ok()])
+    backend = _make_backend(transport, seed=1234)
+
+    backend.generate(REFERENCE_BYTES, "kitchen, morning coffee")
+
+    payload = json.loads(transport.calls[0].body)
+    assert payload["seed"] == 1234
+
+
+def test_no_seed_omits_the_key():
+    transport = FakeTransport([_submit_ok(), _poll_ready(), _download_ok()])
+    backend = _make_backend(transport)
+
+    backend.generate(REFERENCE_BYTES, "kitchen, morning coffee")
+
+    payload = json.loads(transport.calls[0].body)
+    assert "seed" not in payload
+
+
+# --- cap: FLUX.2 accepts at most 8 input images ---------------------------
+
+
+def test_more_than_seven_extra_references_is_rejected():
+    transport = FakeTransport([])  # never reaches the transport
+    backend = _make_backend(transport)
+    too_many = [b"anchor-%d" % i for i in range(8)]  # 1 primary + 8 = 9 > 8
+
+    with pytest.raises(ImageBackendError) as excinfo:
+        backend.generate(REFERENCE_BYTES, "gym selfie", extra_references=too_many)
+
+    assert excinfo.value.reason == "config"
+    assert transport.calls == []
+
+
+def test_exactly_seven_extra_references_is_accepted():
+    transport = FakeTransport([_submit_ok(), _poll_ready(), _download_ok()])
+    backend = _make_backend(transport)
+    seven = [b"anchor-%d" % i for i in range(7)]  # 1 primary + 7 = 8 (the cap)
+
+    backend.generate(REFERENCE_BYTES, "gym selfie", extra_references=seven)
+
+    payload = json.loads(transport.calls[0].body)
+    assert base64.b64decode(payload["input_image_8"]) == seven[-1]

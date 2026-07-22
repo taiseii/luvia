@@ -55,6 +55,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -67,6 +68,9 @@ BFL_SUBMIT_URL = "https://api.bfl.ai/v1/flux-2-pro"
 # the strict max is pinned in code: 2 is the loosest value this backend will ever
 # send, and anything above it is refused rather than trusted.
 STRICT_SAFETY_TOLERANCE = 2
+# FLUX.2 pro accepts up to 8 input images (input_image + input_image_2..8), so
+# the primary reference leaves room for 7 identity anchors.
+MAX_EXTRA_REFERENCES = 7
 
 # Bounded reads: JSON control responses are tiny; only the final image is large.
 MAX_JSON_BYTES = 1 * 1024 * 1024  # 1 MiB — submit/poll/error bodies
@@ -228,7 +232,13 @@ class UrllibTransport:
 class ImageBackend(Protocol):
     """The one-method seam every image backend implements."""
 
-    def generate(self, reference_image: bytes, scene_prompt: str) -> bytes: ...
+    def generate(
+        self,
+        reference_image: bytes,
+        scene_prompt: str,
+        *,
+        extra_references: Sequence[bytes] = (),
+    ) -> bytes: ...
 
 
 class BflFluxBackend:
@@ -241,6 +251,7 @@ class BflFluxBackend:
         submit_url: str = BFL_SUBMIT_URL,
         api_key_env: str = "FLUX_API",
         safety_tolerance: int = STRICT_SAFETY_TOLERANCE,
+        seed: int | None = None,
         max_poll_attempts: int = 60,
         poll_interval: float = 1.5,
         sleep: Callable[[float], None] = time.sleep,
@@ -261,12 +272,36 @@ class BflFluxBackend:
         self._submit_url = submit_url
         self._api_key_env = api_key_env
         self._safety_tolerance = safety_tolerance
+        self._seed = seed
         self._max_poll_attempts = max_poll_attempts
         self._poll_interval = poll_interval
         self._sleep = sleep
 
-    def generate(self, reference_image: bytes, scene_prompt: str) -> bytes:
-        """Edit the reference by the scene prompt and return the image bytes."""
+    def generate(
+        self,
+        reference_image: bytes,
+        scene_prompt: str,
+        *,
+        extra_references: Sequence[bytes] = (),
+    ) -> bytes:
+        """Edit the reference by the scene prompt and return the image bytes.
+
+        ``extra_references`` are additional identity-anchor images sent alongside
+        the primary reference (as ``input_image_2..N``) so the model triangulates
+        the face instead of extrapolating from one frame. The caller picks the
+        anchor set; the backend just carries whatever it is handed.
+        """
+        # FLUX.2 pro accepts at most 8 input images: the primary plus 7 anchors.
+        # This is pinned in code, so an over-long anchor set is a caller bug —
+        # fail closed before spending a request rather than silently dropping
+        # identity anchors.
+        if len(extra_references) > MAX_EXTRA_REFERENCES:
+            raise ImageBackendError(
+                "config",
+                f"at most {MAX_EXTRA_REFERENCES} extra references are allowed "
+                f"(FLUX.2 caps input images at {MAX_EXTRA_REFERENCES + 1})",
+            )
+
         api_key = os.environ.get(self._api_key_env)
         if not api_key:
             raise ImageBackendError(
@@ -274,7 +309,9 @@ class BflFluxBackend:
                 f"{self._api_key_env} is not set; cannot reach the image backend",
             )
 
-        polling_url = self._submit(reference_image, scene_prompt, api_key)
+        polling_url = self._submit(
+            reference_image, scene_prompt, api_key, extra_references
+        )
         # Validate BEFORE polling — the poll carries the key, so the host it goes
         # to must be a trusted BFL API host, not whatever the response supplied.
         _require_trusted_url(polling_url, _is_bfl_api_host)
@@ -286,7 +323,13 @@ class BflFluxBackend:
 
     # -- BFL steps ---------------------------------------------------------
 
-    def _submit(self, reference_image: bytes, scene_prompt: str, api_key: str) -> str:
+    def _submit(
+        self,
+        reference_image: bytes,
+        scene_prompt: str,
+        api_key: str,
+        extra_references: Sequence[bytes] = (),
+    ) -> str:
         payload = {
             "prompt": scene_prompt,
             # Reference travels inline as base64 — never a URL to a public host.
@@ -294,6 +337,13 @@ class BflFluxBackend:
             "safety_tolerance": self._safety_tolerance,
             "output_format": "png",
         }
+        # Identity anchors follow the primary as input_image_2, input_image_3, ...
+        for offset, anchor in enumerate(extra_references, start=2):
+            payload[f"input_image_{offset}"] = base64.b64encode(anchor).decode("ascii")
+        # A pinned seed keeps the face reproducible shot to shot; omitted when
+        # unset so BFL falls back to its own random seed.
+        if self._seed is not None:
+            payload["seed"] = self._seed
         resp = self._call(
             "POST",
             self._submit_url,

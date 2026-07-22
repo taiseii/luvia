@@ -193,6 +193,22 @@ def resolve_reference_role(
     return _default_portrait(manifest)
 
 
+def identity_anchor_references(
+    assets_dir: Path | str | None = None,
+) -> list[Reference]:
+    """The fixed identity-anchor set sent alongside every generated selfie.
+
+    These travel as the backend's ``extra_references`` (``input_image_2..N``) so
+    the model triangulates the face rather than extrapolating from one frame. The
+    set is fixed here, never persona-chosen — same capability/persona split as the
+    pinned POV and safety tolerance. Today it is the canonical-face portrait; when
+    more curated face angles land (0018), add their rows here and every selfie
+    gains fidelity with no caller change.
+    """
+    manifest = load_reference_manifest(assets_dir)
+    return [_default_portrait(manifest)]
+
+
 def _default_portrait(manifest: list[Reference]) -> Reference:
     """The fallback reference: the default-flagged canonical-face portrait.
 

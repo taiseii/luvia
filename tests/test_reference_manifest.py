@@ -278,3 +278,17 @@ def test_missing_required_field_raises_manifest_error(tmp_path, monkeypatch):
     with pytest.raises(ReferenceManifestError) as excinfo:
         reference_manifest.load_reference_manifest()
     assert "role" in str(excinfo.value)
+
+
+# --- identity anchors: fixed face set sent alongside every generation ------
+
+
+def test_identity_anchors_return_the_canonical_face(tmp_path, monkeypatch):
+    _write_assets(tmp_path)
+    monkeypatch.setenv("LUVIA_SOPHIA_ASSETS", str(tmp_path))
+
+    anchors = reference_manifest.identity_anchor_references()
+
+    roles = [ref.role for ref in anchors]
+    assert roles == ["canonical_face"]
+    assert anchors[0].path == tmp_path / "canonical_portrait.png"

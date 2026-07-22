@@ -44,13 +44,14 @@ images for gym/bed (library-expansion, 0018 territory).
 
 ## Acceptance criteria
 
-- [ ] Submit payload carries the resolved role image as primary plus the fixed identity-anchor
+- [x] Submit payload carries the resolved role image as primary plus the fixed identity-anchor
       set as `input_image_2..N`
-- [ ] Anchor set is fixed in code/manifest; persona/scene cannot alter it
-- [ ] A `seed` is sent; policy documented (default stable per-persona, overridable)
-- [ ] Backend stays swappable transport — no persona/POV/quota logic leaks in; multi-ref +
+- [x] Anchor set is fixed in code/manifest; persona/scene cannot alter it
+- [x] A `seed` is sent; policy documented (default stable per-persona, overridable) —
+      `DEFAULT_SELFIE_SEED`, env `LUVIA_SELFIE_SEED` overrides, sentinel `0` opts out to random
+- [x] Backend stays swappable transport — no persona/POV/quota logic leaks in; multi-ref +
       seed are backend-internal
-- [ ] Existing single-`input_image` behavior degrades gracefully if the anchor set is absent
+- [x] Existing single-`input_image` behavior degrades gracefully if the anchor set is absent
 - [ ] Live (HITL, real FLUX spend): re-run the 0020 drift scenes (gym mid-workout, bed
       pajamas) and confirm the face holds measurably better than the single-ref baseline in
       `docs/hitl/0020/`

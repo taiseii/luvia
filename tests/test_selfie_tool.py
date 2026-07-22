@@ -53,8 +53,9 @@ class FakeBackend:
         self.error = error
         self.calls = []
 
-    def generate(self, reference_image, scene_prompt):
+    def generate(self, reference_image, scene_prompt, *, extra_references=()):
         self.calls.append((reference_image, scene_prompt))
+        self.extra_references = list(extra_references)
         if self.error is not None:
             raise self.error
         return self.image
@@ -431,7 +432,7 @@ def test_concurrent_breach_between_check_and_log_soft_fails(tmp_path, monkeypatc
         def __init__(self):
             self.calls = []
 
-        def generate(self, reference_image, scene_prompt):
+        def generate(self, reference_image, scene_prompt, *, extra_references=()):
             self.calls.append((reference_image, scene_prompt))
             other = store.connect()
             try:
@@ -663,3 +664,139 @@ def test_invalid_trigger_source_soft_fails(tmp_path, monkeypatch):
     assert result["reason"] == "invalid_trigger_source"
     assert backend.calls == []
     assert _selfie_rows(db_path) == []
+
+
+# --- multi-reference: identity anchors reach the backend (0021) ------------
+
+ANCHOR_BYTES = b"CANONICAL-FACE-ANCHOR-BYTES"
+
+
+def _patch_anchors(monkeypatch, tmp_path, roles=("canonical_face",)):
+    """Replace identity_anchor_references so no real assets dir is read."""
+    anchors = []
+    for role in roles:
+        f = tmp_path / f"anchor_{role}.png"
+        f.write_bytes(ANCHOR_BYTES)
+        anchors.append(
+            Reference(
+                file=f.name, role=role, framing="portrait", setting="studio",
+                tags=(), description=f"{role} anchor", default=True, path=f,
+            )
+        )
+    monkeypatch.setattr(
+        "plugin.tools.identity_anchor_references", lambda assets_dir=None: anchors
+    )
+    return anchors
+
+
+def test_non_canonical_role_sends_identity_anchor_as_extra_reference(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id = _new_user()
+    # Primary is a full-body pose, so the canonical face is sent as an anchor.
+    _patch_resolver(monkeypatch, _fake_reference(tmp_path, role="full_body_standing"))
+    _patch_anchors(monkeypatch, tmp_path)
+    backend = FakeBackend()
+
+    from plugin.tools import luvia_selfie
+
+    result = luvia_selfie(
+        user_id=user_id, scene="at the gym mid-workout",
+        reference_role="full_body_standing", trigger_source="request",
+        now=NOW, backend=backend, output_dir=tmp_path / "selfies",
+    )
+
+    assert result["ok"] is True
+    assert backend.extra_references == [ANCHOR_BYTES]
+
+
+def test_canonical_face_primary_sends_no_anchor_to_avoid_double_send(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id = _new_user()
+    primary = _fake_reference(tmp_path, role="canonical_face")
+    _patch_resolver(monkeypatch, primary)
+    # The anchor set IS the canonical face — same path as the primary here.
+    anchor = Reference(
+        file=primary.file, role="canonical_face", framing="portrait",
+        setting="studio", tags=(), description="anchor", default=True,
+        path=primary.path,
+    )
+    monkeypatch.setattr(
+        "plugin.tools.identity_anchor_references", lambda assets_dir=None: [anchor]
+    )
+    backend = FakeBackend()
+
+    from plugin.tools import luvia_selfie
+
+    result = luvia_selfie(
+        user_id=user_id, scene="cozy at home", reference_role="canonical_face",
+        trigger_source="request", now=NOW, backend=backend,
+        output_dir=tmp_path / "s",
+    )
+
+    assert result["ok"] is True
+    assert backend.extra_references == []
+
+
+def test_anchor_resolution_failure_degrades_to_single_reference(tmp_path, monkeypatch):
+    db_path = tmp_path / "luvia.db"
+    monkeypatch.setenv("LUVIA_DB", str(db_path))
+    user_id = _new_user()
+    _patch_resolver(monkeypatch, _fake_reference(tmp_path, role="full_body_standing"))
+
+    def boom(assets_dir=None):
+        raise ReferenceManifestError("anchor manifest missing")
+
+    monkeypatch.setattr("plugin.tools.identity_anchor_references", boom)
+    backend = FakeBackend()
+
+    from plugin.tools import luvia_selfie
+
+    result = luvia_selfie(
+        user_id=user_id, scene="at the gym", reference_role="full_body_standing",
+        trigger_source="request", now=NOW, backend=backend,
+        output_dir=tmp_path / "s",
+    )
+
+    # Anchors absent -> still generates, just with no extra references.
+    assert result["ok"] is True
+    assert backend.extra_references == []
+
+
+# --- seed config: pinned face across selfies via env (0021) ----------------
+
+
+def test_selfie_seed_reads_configured_env(monkeypatch):
+    from plugin.tools import _selfie_seed
+
+    monkeypatch.setenv("LUVIA_SELFIE_SEED", "424242")
+    assert _selfie_seed() == 424242
+
+
+def test_selfie_seed_absent_falls_back_to_stable_default(monkeypatch):
+    from plugin.tools import DEFAULT_SELFIE_SEED, _selfie_seed
+
+    monkeypatch.delenv("LUVIA_SELFIE_SEED", raising=False)
+    # Default is a stable per-persona seed so her face reads consistent shot to
+    # shot out of the box, not a fresh random face each time.
+    assert _selfie_seed() == DEFAULT_SELFIE_SEED
+
+
+def test_selfie_seed_malformed_falls_back_to_stable_default(monkeypatch):
+    from plugin.tools import DEFAULT_SELFIE_SEED, _selfie_seed
+
+    monkeypatch.setenv("LUVIA_SELFIE_SEED", "not-an-int")
+    assert _selfie_seed() == DEFAULT_SELFIE_SEED
+
+
+def test_selfie_seed_env_disables_with_sentinel(monkeypatch):
+    from plugin.tools import _selfie_seed
+
+    # Sentinel 0 opts out of the pinned seed -> None -> BFL random per shot.
+    monkeypatch.setenv("LUVIA_SELFIE_SEED", "0")
+    assert _selfie_seed() is None
