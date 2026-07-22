@@ -26,21 +26,28 @@ No plugin code — this is box config plus skill prose:
 - Box `config.yaml`: `gateway.message_timestamps.enabled: true` and `timezone: Europe/Amsterdam`
   (also settable via `HERMES_TIMEZONE`). This makes the stamp render in the learner's zone and
   the host's injected date roll at the learner's midnight.
-- sophia-nl skill: read the leading `[...]` stamp on the latest message as "now," map it to the
-  routine block, and anchor texting tone/energy, felt availability, and any selfie scene to that
-  block. Timezone is captured at onboarding into `users.timezone`; keep the ask-once-in-character
+- Clock-reading prose: read the leading `[...]` stamp on the latest message as "now," map it to
+  the routine block, and anchor texting tone/energy, felt availability, and any selfie scene to
+  that block. **Amended by PRD 0004:** this prose lives in the always-on `persona/SOUL.md` core
+  (authored in 0022), not the skill body — the skill is on-demand and not reliably in context.
+  Timezone is captured at onboarding into `users.timezone`; keep the ask-once-in-character
   fallback if it is ever missing.
 
-Provision the box config through the durable Ansible wiring, bundled with the pending
-`FLUX_API` + `LUVIA_SOPHIA_ASSETS` durable-wiring task — not a hand-edit that the next Ansible
-run clobbers.
+**Amended by PRD 0004 (folded decision):** hand-edit the box `config.yaml` now to unblock the
+persona e2e; durable Ansible wiring (bundled with the `FLUX_API` + `LUVIA_SOPHIA_ASSETS`
+durable-wiring task) is deferred to debt ticket 0024.
+
+Pre-flight before the edit: confirm the gateway's actual stamp format matches
+`[%a %Y-%m-%d %H:%M:%S %Z]` and that the `message_timestamps` config key exists in the box's
+Hermes version.
 
 ## Acceptance criteria
 
 - [ ] `gateway.message_timestamps.enabled: true` and `timezone: Europe/Amsterdam` set on the box
-      via durable Ansible wiring; the inbound-message stamp renders in CET/CEST, not UTC
-- [ ] sophia-nl skill reads the leading `[...]` stamp as the current time and anchors tone /
-      availability / selfie scene to the derived routine block; ask-once timezone fallback intact
+      (hand-edit per PRD 0004; durability deferred to 0024); the inbound-message stamp renders
+      in CET/CEST, not UTC
+- [ ] Clock-reading prose (stamp -> "now" -> routine block) lands in the always-on persona core
+      per 0022; ask-once timezone fallback intact
 - [ ] Live (HITL): the persona reports the correct time-of-day — no "morning" greeting at 01:00
       local — and its tone matches the current block
 - [ ] No plugin/tool code added for the clock (host feature only, per ADR-0004)
