@@ -1,7 +1,7 @@
 ---
 title: "Role-aware first-person selfie POV in luvia_selfie"
-status: ready-for-agent
-labels: [ready-for-agent, hitl]
+status: done
+labels: [done, hitl]
 ---
 
 ## Parent
@@ -32,12 +32,14 @@ risk is slightly higher on full-body roles; the fallback is the persona picking 
 
 ## Acceptance criteria
 
-- [ ] `luvia_selfie` wraps the persona scene with a POV prefix selected by `reference_role`
-- [ ] Front-camera framing for close/mid roles; mirror-selfie framing for the two full-body
+- [x] `luvia_selfie` wraps the persona scene with a POV prefix selected by `reference_role`
+- [x] Front-camera framing for close/mid roles; mirror-selfie framing for the two full-body
       roles
-- [ ] The backend stays a dumb, swappable transport — no POV logic leaks into it
-- [ ] Live (HITL, real FLUX spend): a generated selfie reads as a first-person phone selfie,
+- [x] The backend stays a dumb, swappable transport — no POV logic leaks into it
+- [x] Live (HITL, real FLUX spend): a generated selfie reads as a first-person phone selfie,
       not a 3rd-person portrait, and the face is still recognizably the persona
+      — verified 2026-07-22: half_body (front-camera) and full_body_standing (mirror) both
+      read as first-person phone selfies with recognizable identity (`docs/hitl/0020/`).
 
 ## Blocked by
 

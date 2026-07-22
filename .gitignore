@@ -6,3 +6,6 @@ assets/sophie/
 assets/
 
 .DS_Store
+
+# HITL selfie evidence — large FLUX PNGs, kept local
+docs/hitl/**/*.png
