@@ -534,6 +534,19 @@ _MIRROR_SELFIE_POV = (
     "reflection, candid amateur snapshot, natural lighting. "
 )
 
+# Photographic-realism cues, pinned in code alongside the POV. FLUX.2 pro drifts
+# toward a glossy, over-retouched studio look by default; these camera, skin, and
+# lighting tags pull it back toward a candid phone snapshot. Like the POV and the
+# seed, this is a rendering property fixed here — never persona-chosen, so it can't
+# drift shot to shot. It rides in the framing prefix (before the persona scene), so
+# the scene still ends the prompt and is never sanitized against these cues.
+_REALISM_SUFFIX = (
+    "Shot on a phone camera, visible skin texture with pores and fine lines, "
+    "subtle natural skin imperfections, natural uneven lighting, realistic shallow "
+    "depth of field, unposed and candid, no beauty filter, no retouching, not "
+    "glossy, not over-processed, photorealistic. "
+)
+
 
 def _selfie_pov_prefix(reference_role: str) -> str:
     """First-person selfie framing, pinned in code and role-aware.
@@ -542,10 +555,15 @@ def _selfie_pov_prefix(reference_role: str) -> str:
     took of her (CONTEXT.md 'Selfie'). The POV is a rendering property fixed here
     the same way ``safety_tolerance`` is — never left to the persona, so it can't
     drift shot to shot. Full-body roles get a mirror selfie; everything else (and
-    any unknown role, matching the canonical_face fallback) a front-camera shot."""
-    if reference_role in _MIRROR_SELFIE_ROLES:
-        return _MIRROR_SELFIE_POV
-    return _FRONT_CAMERA_POV
+    any unknown role, matching the canonical_face fallback) a front-camera shot.
+    The photographic-realism cues are appended to whichever POV applies, so every
+    shot carries them without the persona ever choosing them."""
+    pov = (
+        _MIRROR_SELFIE_POV
+        if reference_role in _MIRROR_SELFIE_ROLES
+        else _FRONT_CAMERA_POV
+    )
+    return pov + _REALISM_SUFFIX
 
 
 SELFIE_SEED_ENV = "LUVIA_SELFIE_SEED"
